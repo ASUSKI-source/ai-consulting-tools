@@ -1,0 +1,48 @@
+=== CRYPTO DATA (input to AI) ===
+
+=== CRYPTO ANALYSIS REQUEST ===
+Name: XRP (XRP)
+Current Price: $1.41
+Market Cap: $86,165,806,549.00 (Mid Cap)
+24h Volume: $3,632,362,643.00
+
+--- PRICE PERFORMANCE ---
+24h Change: 2.99%
+7d Change:  1.88%
+30d Change: -13.90%
+
+--- POSITION VS ATH ---
+All-Time High: $3.65
+Distance from ATH: 61.35% below ATH
+
+Dominance Note: Mid Cap
+================================
+
+============================================================
+AI CRYPTO ANALYSIS: XRP (XRP)
+============================================================
+
+# XRP ANALYSIS
+
+## MARKET STRUCTURE: BEAR TREND
+XRP is in a **bear market structure**. Trading 61.35% below its all-time high of $3.65, the asset remains in a prolonged downtrend despite recent bounce attempts. Current price of $1.41 reflects sustained weakness from peak valuations. The security has failed to establish higher lows or higher highs characteristic of bull markets.
+
+## MOMENTUM SIGNALS
+**Mixed but negative overall:**
+- **24h:** +2.99% (minor recovery bounce)
+- **7d:** +1.88% (weak weekly strength)
+- **30d:** -13.90% (definitive weakness over medium term)
+
+The 30-day decline of nearly 14% contradicts the recent 24h and 7d gains. This pattern suggests short-term bounces within a downtrend—classic bear market volatility. The 2.99% daily pop is insufficient to reverse momentum when monthly performance is deeply negative. Real strength would show sustained gains across all three timeframes.
+
+## RISK ASSESSMENT
+**ATH Drawdown: 61.35%—This is severe.**
+
+This drawdown magnitude indicates XRP has lost nearly two-thirds of its peak value. In recovery terms, the asset would need a 163% rally just to reclaim the ATH. The 30-day volatility context shows XRP is actively declining, not consolidating. With $3.6B in daily volume relative to an $86B market cap, liquidity is reasonable, but this doesn't offset the structural downside risk. Recent micro-bounces could be margin recoveries or short covering, not trend reversals.
+
+## BOTTOM LINE
+**BEARISH | Conviction: MEDIUM-HIGH**
+
+XRP remains fundamentally weak. The -13.90% monthly decline is the controlling factor here, unambiguously showing sellers remain in control. The 61.35% ATH drawdown reflects a broken bull case. Recent daily/weekly gains (+2.99%/+1.88%) are noise and tactical bounces typical of bear markets—they don't signal reversal without accompanying strength above key resistance levels (likely $2.00-$2.50).
+
+**Risk/reward is unfavorable:** downside risk extends toward $0.90-$1.10 support, while upside requires breaking through heavy resistance zones. Only a close above $2.00 with sustained 7d+ momentum would warrant reconsideration.
