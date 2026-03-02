@@ -1,0 +1,24 @@
+Date and time: 2026-02-28T13:08:21.459917
+Summary length choice: 3 - Detailed (3-4 bullet points)
+
+Original text:
+Kroger is one of the largest supermarket chains in the United States, operating
+over 2,700 stores across 35 states under various banner names including Kroger,
+Ralphs, Fred Meyer, and King Soopers. The company employs approximately 430,000
+workers and generated revenue of over 148 billion dollars in 2023. Kroger has
+been investing heavily in automation and technology, including the deployment of
+automated warehouse fulfillment centers and AI-powered inventory management
+systems. The company faces increasing competition from Amazon Fresh, Walmart,
+and discount grocers like Aldi and Lidl. In 2022 Kroger announced a proposed
+merger with Albertsons which has faced significant regulatory scrutiny.
+
+Summary:
+# Kroger Summary
+
+• Kroger operates over 2,700 stores across 35 states with approximately 430,000 employees and generated revenue exceeding $148 billion in 2023.
+
+• The company is investing significantly in automation and technology, including automated warehouse fulfillment centers and AI-powered inventory management systems.
+
+• Kroger faces intense competition from major retailers including Amazon Fresh, Walmart, and discount grocers like Aldi and Lidl.
+
+• A proposed 2022 merger between Kroger and Albertsons has encountered substantial regulatory obstacles.
