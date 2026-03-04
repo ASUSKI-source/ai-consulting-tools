@@ -30,10 +30,14 @@ from market_analyzer import (
 )
 import anthropic
 
-load_dotenv()
-
 port = int(os.getenv('PORT', 8000))
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Load environment variables from a .env file that lives next to this file.
+# This ensures local development picks up ANTHROPIC_API_KEY even if the
+# working directory is different. On Railway, real environment variables
+# (set via the dashboard) will still take precedence.
+load_dotenv(os.path.join(BASE_DIR, ".env"))
 static_path = os.path.join(BASE_DIR, 'static')
 
 CURRENT_MODEL = "claude-sonnet-4-5"
