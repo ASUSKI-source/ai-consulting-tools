@@ -434,6 +434,17 @@ input[type="text"]:focus {
     background: #7c3aed;
     color: #fff;
 }
+/* Stock badge – e.g. blue (match your app accent) */
+.history-item[data-asset-type="stock"] .history-type-badge {
+    background: #3B82F6;
+    color: #fff;
+}
+
+/* Crypto badge – e.g. green */
+.history-item[data-asset-type="crypto"] .history-type-badge {
+    background: #22C55E;
+    color: #fff;
+}
 
 .history-metrics {
     flex: 1 1 auto;

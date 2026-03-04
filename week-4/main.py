@@ -206,7 +206,7 @@ def analyze_stock_endpoint(
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
             model=CURRENT_MODEL,
-            max_tokens=400,
+            max_tokens=300,
             system=SYSTEM_PROMPT,
             messages=[{'role': 'user', 'content': formatted_prompt}],
         )
@@ -314,7 +314,7 @@ def analyze_crypto_endpoint(
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
             model=CURRENT_MODEL,
-            max_tokens=400,
+            max_tokens=300,
             system=CRYPTO_SYSTEM_PROMPT,
             messages=[{'role': 'user', 'content': formatted_prompt}],
         )
@@ -424,7 +424,7 @@ def analyze_compare_endpoint(
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
             model=CURRENT_MODEL,
-            max_tokens=400,
+            max_tokens=300,
             system=COMPARISON_SYSTEM_PROMPT,
             messages=[{'role': 'user', 'content': combined_prompt}],
         )
