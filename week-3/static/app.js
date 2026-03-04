@@ -5,34 +5,106 @@
 
 const API_BASE = window.location.origin;
 
-// --- UI UTILITIES ---
+// --- LOADING STATE MANAGEMENT ---
+
+let loadingInterval = null;
 
 /**
- * Toggles the visibility of the loading spinner.
- * @param {boolean} visible 
+ * Starts the phased loading experience.
+ * Shows ticker-specific messages that cycle every 2 seconds.
+ * Disables the active button to prevent double-clicks.
+ * @param {string} ticker - The asset being analyzed (e.g. 'AAPL' or 'bitcoin')
+ * @param {HTMLElement} button - The button to disable during loading
+ * @param {string} originalText - The button's original label to restore later
  */
-function showLoading(visible) {
-    const loader = document.getElementById('loading');
-    loader.style.display = visible ? 'block' : 'none';
-    if (visible) {
-        document.getElementById('results').style.display = 'none';
-        hideError();
+function startLoading(ticker, button, originalText) {
+    // Hide results and errors, show loader
+    document.getElementById('results').style.display = 'none';
+    document.getElementById('results').style.opacity = '0';
+    hideError();
+    document.getElementById('loading').style.display = 'block';
+
+    // Disable button and show in-progress label
+    if (button) {
+        button.disabled = true;
+        button.textContent = 'Analyzing...';
+        button._originalText = originalText;
+    }
+
+    const phases = [
+        `Fetching data for ${ticker}...`,
+        'Calculating indicators...',
+        'Generating AI analysis...'
+    ];
+
+    let phaseIndex = 0;
+    const loadingText = document.getElementById('loading-text');
+    if (loadingText) loadingText.textContent = phases[0];
+
+    // Clear any previous interval before starting a new one
+    if (loadingInterval) clearInterval(loadingInterval);
+
+    loadingInterval = setInterval(() => {
+        phaseIndex++;
+        if (loadingText && phaseIndex < phases.length) {
+            loadingText.textContent = phases[phaseIndex];
+        }
+        // Stay on last message once reached — no looping back
+    }, 2000);
+}
+
+/**
+ * Stops the loading state and re-enables the button.
+ * @param {HTMLElement} button - The button to re-enable
+ */
+function stopLoading(button) {
+    clearInterval(loadingInterval);
+    loadingInterval = null;
+    document.getElementById('loading').style.display = 'none';
+
+    if (button) {
+        button.disabled = false;
+        button.textContent = button._originalText || 'Analyze';
     }
 }
 
 /**
- * Displays an error message with an auto-hide timer.
- * @param {string} message 
+ * Fades the results section in smoothly after data arrives.
  */
-function showError(message) {
-    const errorDiv = document.getElementById('error-message');
-    errorDiv.innerHTML = `<span>${message}</span><span class="close-btn" onclick="hideError()">×</span>`;
-    errorDiv.style.display = 'flex';
-    
-    // Auto-hide after 8 seconds
+function fadeInResults() {
+    const results = document.getElementById('results');
+    results.style.display = 'block';
+    // Small timeout lets the browser register display:block before animating opacity
     setTimeout(() => {
-        hideError();
-    }, 8000);
+        results.style.opacity = '1';
+    }, 20);
+}
+
+
+// --- UI UTILITIES ---
+
+/**
+ * Displays an error message with an auto-hide timer.
+ * Accepts either a plain string or a structured {user_message, suggestion} object.
+ * @param {string|object} errorData
+ */
+function showError(errorData) {
+    const errorDiv = document.getElementById('error-message');
+    let html = '';
+
+    if (typeof errorData === 'string') {
+        html = `<span>${errorData}</span>`;
+    } else {
+        const msg = errorData.user_message || 'An error occurred.';
+        const hint = errorData.suggestion || '';
+        html = `<span><strong>${msg}</strong>${hint ? `<br><small>${hint}</small>` : ''}</span>`;
+    }
+
+    html += `<span class="close-btn" onclick="hideError()">×</span>`;
+    errorDiv.innerHTML = html;
+    errorDiv.style.display = 'flex';
+
+    setTimeout(() => hideError(), 8000);
 }
 
 /**
@@ -42,11 +114,12 @@ function hideError() {
     document.getElementById('error-message').style.display = 'none';
 }
 
+
 // --- FORMATTING FUNCTIONS ---
 
 /**
  * Formats numbers as currency.
- * @param {number} price 
+ * @param {number} price
  */
 function formatPrice(price) {
     return new Intl.NumberFormat('en-US', {
@@ -59,7 +132,7 @@ function formatPrice(price) {
 
 /**
  * Formats percentages with + prefix and color-coding logic.
- * @param {number} pct 
+ * @param {number} pct
  */
 function formatPct(pct) {
     if (pct === null || pct === undefined) return '0.00%';
@@ -77,27 +150,26 @@ function formatMarketCap(cap) {
     return formatPrice(cap);
 }
 
+
 // --- RESULTS DISPLAY LOGIC ---
 
 /**
  * Populates the UI with Stock-specific data.
  */
 function displayStockResults(data) {
-    showLoading(false);
-    document.getElementById('results').style.display = 'block';
-    
     // Header & Price
     document.getElementById('display-name').textContent = data.company_name;
     document.getElementById('display-symbol').textContent = data.ticker;
     document.getElementById('current-price').textContent = formatPrice(data.current_price);
-    
+
     // Toggle Section Visibility
     document.getElementById('stock-only-stats').style.display = 'grid';
     document.getElementById('crypto-only-stats').style.display = 'none';
 
     // Stock Stats
     document.getElementById('pe-ratio').textContent = data.pe_ratio || 'N/A';
-    document.getElementById('year-range').textContent = `${formatPrice(data.week_low_52)} - ${formatPrice(data.week_high_52)}`;
+    document.getElementById('year-range').textContent =
+        `${formatPrice(data.week_low_52)} - ${formatPrice(data.week_high_52)}`;
 
     // Technicals
     const rsiEl = document.getElementById('rsi-val');
@@ -110,15 +182,14 @@ function displayStockResults(data) {
     // AI Analysis & Cost
     document.getElementById('ai-response-text').innerText = data.analysis || 'No analysis returned.';
     document.getElementById('analysis-cost').textContent = data.estimated_cost.toFixed(6);
+
+    fadeInResults();
 }
 
 /**
- * Populates the UI with Crypto-specific data, including advanced run metrics.
+ * Populates the UI with Crypto-specific data.
  */
 function displayCryptoResults(data) {
-    showLoading(false);
-    document.getElementById('results').style.display = 'block';
-
     document.getElementById('display-name').textContent = data.name;
     document.getElementById('display-symbol').textContent = data.symbol.toUpperCase();
     document.getElementById('current-price').textContent = formatPrice(data.current_price_usd);
@@ -131,45 +202,39 @@ function displayCryptoResults(data) {
     document.getElementById('change-7d').innerHTML = formatPct(data.price_change_7d_pct);
     document.getElementById('change-30d').innerHTML = formatPct(data.price_change_30d_pct);
 
-    // Advanced Metrics (Velocity/Funding/Depth)
-    //document.getElementById('slap-freq-val').textContent = data.slap_frequency || 'Normal';
-    //document.getElementById('funding-rate-val').textContent = `${(data.funding_rate * 100).toFixed(4)}%`;
-    //document.getElementById('str-ratio-val').textContent = data.short_reserve_ratio || '0.00';
-    //document.getElementById('liq-gap-dist').textContent = data.liquidity_gap || 'Calculating...';
-
-    document.getElementById('ai-response-text').innerHTML = 
-    typeof marked !== 'undefined' ? marked.parse(data.analysis || '') : (data.analysis || '');
+    document.getElementById('ai-response-text').innerHTML =
+        typeof marked !== 'undefined' ? marked.parse(data.analysis || '') : (data.analysis || '');
     document.getElementById('analysis-cost').textContent = data.estimated_cost.toFixed(6);
+
+    fadeInResults();
 }
 
 /**
  * Handles the display for the "Compare Two Assets" function.
  */
 function displayCompareResults(data) {
-    showLoading(false);
-    document.getElementById('results').style.display = 'block';
-    
     document.getElementById('display-name').textContent = `${data.asset1_name} vs ${data.asset2_name}`;
-    document.getElementById('display-symbol').textContent = "COMPARE";
-    
-    // Clear leftover data from previous single-stock analysis
+    document.getElementById('display-symbol').textContent = 'COMPARE';
+
+    // Clear leftover data from any previous single-asset analysis
     document.getElementById('current-price').textContent = '';
     document.getElementById('pe-ratio').textContent = '';
     document.getElementById('year-range').textContent = '';
     document.getElementById('rsi-val').textContent = '';
     document.getElementById('sma5-val').textContent = '';
     document.getElementById('sma20-val').textContent = '';
-    
-    // Hide standard grids for comparison view
+
     document.getElementById('stock-only-stats').style.display = 'none';
     document.getElementById('crypto-only-stats').style.display = 'none';
-    document.getElementById('price-container') && 
-        (document.getElementById('price-container').style.display = 'none');
-    
-    // Use data.analysis — not data.comparison_analysis
-    document.getElementById('ai-response-text').innerHTML = 
-    typeof marked !== 'undefined' ? marked.parse(data.analysis || 'No comparison returned.') : (data.analysis || 'No comparison returned.');
-    document.getElementById('analysis-cost').textContent = `This analysis cost: $${data.estimated_cost.toFixed(6)}`;
+
+    document.getElementById('ai-response-text').innerHTML =
+        typeof marked !== 'undefined'
+            ? marked.parse(data.analysis || 'No comparison returned.')
+            : (data.analysis || 'No comparison returned.');
+    document.getElementById('analysis-cost').textContent =
+        `This analysis cost: $${data.estimated_cost.toFixed(6)}`;
+
+    fadeInResults();
 }
 
 
@@ -177,9 +242,11 @@ function displayCompareResults(data) {
 
 async function analyzeStock() {
     const ticker = document.getElementById('stock-ticker').value.trim().toUpperCase();
-    if (!ticker) return showError("Please enter a stock ticker.");
+    if (!ticker) return showError('Please enter a stock ticker.');
 
-    showLoading(true);
+    const btn = document.getElementById('analyze-stock-btn');
+    startLoading(ticker, btn, 'Analyze');
+
     try {
         const response = await fetch(`${API_BASE}/analyze/stock`, {
             method: 'POST',
@@ -187,18 +254,23 @@ async function analyzeStock() {
             body: JSON.stringify({ ticker })
         });
         const data = await response.json();
+        stopLoading(btn);
         if (response.ok) displayStockResults(data);
-        else showError(data.detail || "Error analyzing stock.");
+        else showError(data.detail || 'Error analyzing stock.');
     } catch (err) {
-        showError("Connection failed. Ensure the bridge is active.");
+        stopLoading(btn);
+        console.error('analyzeStock error:', err);
+        showError('Connection failed. Is the server running?');
     }
 }
 
 async function analyzeCrypto() {
     const coinId = document.getElementById('crypto-id').value.trim().toLowerCase();
-    if (!coinId) return showError("Please enter a CoinGecko ID.");
+    if (!coinId) return showError('Please enter a CoinGecko ID.');
 
-    showLoading(true);
+    const btn = document.getElementById('analyze-crypto-btn');
+    startLoading(coinId, btn, 'Analyze');
+
     try {
         const response = await fetch(`${API_BASE}/analyze/crypto`, {
             method: 'POST',
@@ -206,10 +278,13 @@ async function analyzeCrypto() {
             body: JSON.stringify({ coin_id: coinId })
         });
         const data = await response.json();
+        stopLoading(btn);
         if (response.ok) displayCryptoResults(data);
-        else showError(data.detail || "Error analyzing crypto.");
+        else showError(data.detail || 'Error analyzing crypto.');
     } catch (err) {
-        showError("Connection failed. Hard refresh the bridge.");
+        stopLoading(btn);
+        console.error('analyzeCrypto error:', err);
+        showError('Connection failed. Is the server running?');
     }
 }
 
@@ -219,9 +294,11 @@ async function compareAssets() {
     const a2 = document.getElementById('asset2-input').value.trim();
     const t2 = document.getElementById('asset2-type').value;
 
-    if (!a1 || !a2) return showError("Both assets are required for comparison.");
+    if (!a1 || !a2) return showError('Both assets are required for comparison.');
 
-    showLoading(true);
+    const btn = document.getElementById('compare-btn');
+    startLoading(`${a1} vs ${a2}`, btn, 'Compare');
+
     try {
         const response = await fetch(`${API_BASE}/analyze/compare`, {
             method: 'POST',
@@ -229,15 +306,16 @@ async function compareAssets() {
             body: JSON.stringify({ asset1: a1, asset1_type: t1, asset2: a2, asset2_type: t2 })
         });
         const data = await response.json();
-        console.log("Compare response status:", response.status);
-        console.log("Compare response data:", JSON.stringify(data));
+        stopLoading(btn);
         if (response.ok) displayCompareResults(data);
-        else showError(data.detail || "Comparison failed.");
+        else showError(data.detail || 'Comparison failed.');
     } catch (err) {
-        console.error("Compare error:", err);
-        showError("Error: " + err.message);
+        stopLoading(btn);
+        console.error('compareAssets error:', err);
+        showError('Connection failed. Is the server running?');
     }
 }
+
 
 // --- INITIALIZATION & EVENT LISTENERS ---
 

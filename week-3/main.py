@@ -28,6 +28,10 @@ import anthropic
 
 load_dotenv()
 
+port = int(os.getenv('PORT', 8000))
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+static_path = os.path.join(BASE_DIR, 'static')
+
 CURRENT_MODEL = "claude-sonnet-4-5"
 
 COST_PER_INPUT_TOKEN = 0.000003
@@ -45,8 +49,7 @@ app.add_middleware(
 @app.get('/')
 def serve_frontend():
     """Serves the main index.html page from the static folder."""
-    # Ensure this path matches your directory structure
-    return FileResponse('static/index.html')
+    return FileResponse(os.path.join(static_path, 'index.html'))
 
 # --- Pydantic request models ---
 
@@ -336,5 +339,8 @@ def get_watchlist():
 
 # 2. MOUNT STATIC FILES LAST
 # This acts as a "catch-all" for anything in the /static folder
-app.mount("/static", StaticFiles(directory="static"), name="static")                
-# Run the server: uvicorn main:app --reload
+app.mount("/static", StaticFiles(directory=static_path), name="static")
+
+if __name__ == '__main__':
+    import uvicorn
+    uvicorn.run(app, host='0.0.0.0', port=port)
