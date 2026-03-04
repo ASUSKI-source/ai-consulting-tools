@@ -1,0 +1,48 @@
+=== STOCK DATA (input to AI) ===
+
+=== STOCK ANALYSIS REQUEST ===
+Ticker: AAPL | Company: Apple Inc.
+Current Price: $261.69 | Market Cap: $3846.30B
+52-Week Range: $169.21 - $288.62
+PE Ratio: 33.17
+
+--- PRICE MOMENTUM ---
+5-Day Change:  -3.84%
+10-Day Change: -0.83%
+30-Day Change: 6.18%
+
+--- TECHNICAL INDICATORS ---
+RSI (14):   51.30 (interpretation: NEUTRAL)
+SMA 5:      $267.55
+SMA 20:     $268.49
+Price vs SMA20: below by 2.53%
+
+--- KEY LEVELS ---
+Recent High: $277.86 (6.18% from current)
+Recent Low:  $246.47 (-5.82% from current)
+
+30-Day Price History (oldest to newest):
+$246.47, $247.42, $248.12, $247.81, $255.17, $258.03, $256.20, $258.04, $259.24, $269.76, $269.23, $276.23, $275.65, $277.86, $274.62, $273.68, $275.50, $261.73, $255.78, $263.88, $264.35, $260.58, $264.58, $266.18, $272.14, $274.23, $272.95, $264.18, $264.72, $261.69
+================================
+
+============================================================
+AI ANALYSIS: AAPL
+============================================================
+
+# AAPL TECHNICAL ANALYSIS
+
+## TREND ASSESSMENT
+AAPL is trading **below SMA20 by 2.53%** ($261.69 vs $268.49), indicating a loss of short-term upward momentum. The stock remains above SMA5 ($267.55), but only marginally—this crossover risk signals weakening support. The price sits **9.33% below the 52-week high** ($288.62) and **54.56% above the 52-week low** ($169.21), confirming the stock has retreated from recent peaks but maintains solid year-to-date positioning.
+
+## KEY OBSERVATIONS
+RSI at **51.30 is neutral**—neither oversold (<30) nor overbought (>70). This reading suggests the next move depends on volume and price action confirmation rather than momentum extremes. The 5-day decline of 3.84% against a positive 30-day gain of 6.18% reveals a pullback within a larger uptrend. The recent high of $277.86 (set 6 trading days ago) was rejected, with price now consolidating in a $255–$275 range.
+
+## RISK FACTORS
+The most immediate concern is the **2.53% gap below SMA20**, which acts as a magnet for short-covering or further selling if breached downward. Support sits at the recent low of $246.47 (5.82% below current price). The 52-week high is 9.33% away, making resistance increasingly difficult to overcome given the elevated PE ratio of 33.17—well above historical Apple averages. Any negative earnings guidance or broader tech sector rotation could accelerate the pullback toward $255.
+
+## BOTTOM LINE
+**NEUTRAL-TO-BEARISH** bias in the near term. 
+
+The **single most important number is the 2.53% underperformance versus SMA20**, which breaks the short-term uptrend. While the 30-day gain of 6.18% shows underlying strength, the inability to hold above $268–$270 suggests profit-taking from the recent $277.86 high is intensifying. 
+
+**Action:** Watch the $255.78 level (previous support) and SMA20 reintersection ($268.49) for confirmation of direction. A close below $255 targets $246.47; a break above $272 reinstates bullish bias toward $280.
