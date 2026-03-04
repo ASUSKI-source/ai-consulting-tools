@@ -421,6 +421,20 @@ input[type="text"]:focus {
     color: var(--text-secondary);
 }
 
+.history-type-badge {
+    display: inline-block;
+    margin-top: 4px;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 0.7rem;
+    font-weight: 600;
+}
+
+.history-type-compare {
+    background: #7c3aed;
+    color: #fff;
+}
+
 .history-metrics {
     flex: 1 1 auto;
     display: flex;

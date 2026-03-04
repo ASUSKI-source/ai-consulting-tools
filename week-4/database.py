@@ -51,8 +51,8 @@ class Analysis(Base):
     __tablename__ = "analyses"
 
     id = Column(Integer, primary_key=True, index=True)
-    ticker = Column(String(20), nullable=False, index=True)
-    asset_type = Column(String(10), nullable=False)  # 'stock' or 'crypto'
+    ticker = Column(String(80), nullable=False, index=True)  # 80 allows "asset1 vs asset2" for comparisons
+    asset_type = Column(String(10), nullable=False)  # 'stock', 'crypto', or 'comparison'
     company_name = Column(String(100))
     current_price = Column(Float)
     rsi = Column(Float)
@@ -101,6 +101,9 @@ def create_tables() -> None:
                 conn.execute(text("ALTER TABLE analyses ADD COLUMN week_high_52 FLOAT"))
             if "week_low_52" not in columns:
                 conn.execute(text("ALTER TABLE analyses ADD COLUMN week_low_52 FLOAT"))
+            # Widen ticker for comparison labels (PostgreSQL only; SQLite is typeless).
+            if engine.dialect.name == "postgresql":
+                conn.execute(text("ALTER TABLE analyses ALTER COLUMN ticker TYPE VARCHAR(80)"))
     except Exception:
         # In dev environments it's safe to ignore migration errors; the app will
         # still function, but some history fields may be missing for older rows.

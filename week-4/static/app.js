@@ -362,11 +362,15 @@ function renderHistoryItem(analysis) {
     const hasNote = noteText.length > 0;
     const safeNote = escapeHtml(noteText);
 
+    const typeLabel = analysis.asset_type === 'comparison' ? 'COMPARE' : (analysis.asset_type || '').toUpperCase();
+    const typeBadgeClass = analysis.asset_type === 'comparison' ? 'history-type-badge history-type-compare' : 'history-type-badge';
+
     return `
         <div class="history-item" data-id="${analysis.id}" data-asset-type="${analysis.asset_type}">
             <div class="history-main">
-                <div class="history-ticker">${analysis.ticker}</div>
-                <div class="history-company">${analysis.company_name || ''}</div>
+                <div class="history-ticker">${escapeHtml(analysis.ticker)}</div>
+                <div class="history-company">${escapeHtml(analysis.company_name || '')}</div>
+                ${typeLabel ? `<span class="${typeBadgeClass}">${typeLabel}</span>` : ''}
             </div>
             <div class="history-metrics">
                 <span class="history-price">${price}</span>
@@ -559,6 +563,14 @@ async function loadAnalysisById(id) {
                 estimated_cost: data.estimated_cost || 0,
                 analysis_id: data.id
             });
+        } else if (data.asset_type === 'comparison') {
+            const names = (data.company_name || data.ticker || '').split(' vs ');
+            displayCompareResults({
+                asset1_name: (names[0] || 'Asset 1').trim(),
+                asset2_name: (names[1] || 'Asset 2').trim(),
+                analysis: data.ai_analysis || '',
+                estimated_cost: data.estimated_cost || 0
+            });
         }
 
         // When loading from history, scroll all the way to the top of the page.
@@ -730,6 +742,7 @@ function displayCompareResults(data) {
         `This analysis cost: $${data.estimated_cost.toFixed(6)}`;
 
     fadeInResults();
+    loadHistory(true);
 }
 
 

@@ -390,7 +390,10 @@ def analyze_crypto_endpoint(
 # Fetches and formats data for both assets, calls Claude once with combined prompt and comparison
 # system prompt. Output: asset1_name, asset2_name, comparison_analysis, estimated_cost.
 @app.post('/analyze/compare')
-def analyze_compare_endpoint(request: CompareRequest):
+def analyze_compare_endpoint(
+    request: CompareRequest,
+    db: Session = Depends(get_db),
+):
     try:
         prompt1, label1 = _get_prompt_and_label(request.asset1, request.asset1_type)
         prompt2, label2 = _get_prompt_and_label(request.asset2, request.asset2_type)
@@ -439,12 +442,32 @@ def analyze_compare_endpoint(request: CompareRequest):
             output_tokens * COST_PER_OUTPUT_TOKEN
         )
 
-        return {
+        result = {
             'asset1_name': label1,
             'asset2_name': label2,
             'analysis': ai_text,
             'estimated_cost': round(estimated_cost, 6),
         }
+
+        # Try to persist the comparison to the database; failures should not block the response.
+        try:
+            db_analysis = Analysis(
+                ticker=f'{request.asset1} vs {request.asset2}',
+                asset_type='comparison',
+                company_name=f'{label1} vs {label2}',
+                ai_analysis=ai_text,
+                prompt_tokens=input_tokens,
+                completion_tokens=output_tokens,
+                estimated_cost=estimated_cost,
+            )
+            db.add(db_analysis)
+            db.commit()
+            db.refresh(db_analysis)
+            result['analysis_id'] = db_analysis.id
+        except Exception as e:
+            print(f'Error saving comparison to database: {e}')
+
+        return result
     except HTTPException:
         raise
     except Exception as e:
