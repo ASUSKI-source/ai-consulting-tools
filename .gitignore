@@ -3,6 +3,7 @@
 */.env
 
 # Python virtual environments
+.venv/
 venv/
 */venv/
 
