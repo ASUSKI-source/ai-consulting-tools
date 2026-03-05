@@ -1,0 +1,46 @@
+In the third quarter, Fictional Systems Inc. delivered solid financial
+    performance despite ongoing macroeconomic uncertainty. Total Q3 revenue
+    reached $4.8 billion, an increase of 11 percent year over year, driven
+    by continued demand for the company's cloud infrastructure platform and
+    strong adoption of its data analytics solutions. Management highlighted
+    particularly robust growth in the mid-market customer segment, where
+    companies are modernizing legacy workloads and consolidating vendors
+    onto more efficient, scalable architectures.
+
+    Subscription and recurring revenue represented 68 percent of total
+    revenue in the quarter, up from 63 percent a year ago, underscoring the
+    increasing durability and visibility of the business model. Gross margin
+    expanded by 120 basis points year over year to 71.2 percent, reflecting
+    a richer mix of software and services, as well as ongoing improvements
+    in data center utilization. Operating income grew faster than revenue,
+    with operating margin increasing to 29.5 percent as the company balanced
+    disciplined expense management with targeted investments in research and
+    development, go-to-market capacity, and customer success programs.
+
+    The company ended the quarter with $9.3 billion in cash, cash
+    equivalents, and short-term investments on the balance sheet and no
+    long-term debt. During the period, Fictional Systems Inc. returned
+    approximately $600 million to shareholders through a combination of
+    share repurchases and a regular quarterly dividend. The board approved a
+    new $2.0 billion repurchase authorization, reflecting confidence in the
+    long-term outlook and the strength of the company's free-cash-flow
+    generation.
+
+    Management described demand trends as stable but noted that some
+    customers are taking longer to approve large transformational projects,
+    especially in interest-rate-sensitive industries such as financial
+    services and real estate. Even so, expansion within the existing
+    customer base remained healthy, and churn rates stayed near historic
+    lows. The company continued to invest in artificial intelligence
+    capabilities that help customers automate workflows, detect anomalies,
+    and derive more actionable insights from their data.
+
+    Looking ahead to the fourth quarter, leadership provided guidance for
+    mid- to high-single-digit sequential revenue growth, assuming no
+    material change in the macro environment. They emphasized that while
+    they do not manage the business to any specific quarter, they remain
+    focused on executing their long-term strategy: deepening customer
+    relationships, expanding the product portfolio, and compounding free
+    cash flow over time. The company did not disclose specific headcount
+    figures but noted that hiring has become more targeted, with priority
+    given to roles in engineering, security, and customer-facing functions.
