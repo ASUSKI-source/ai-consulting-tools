@@ -1,14 +1,24 @@
 """
 Core Retrieval-Augmented Generation (RAG) pipeline.
 
-This module wires together:
-- Our local text chunker
-- ChromaDB for vector storage + search
-- SentenceTransformer for embeddings
-- Claude via the anthropic client for final answers
+RAG = retrieve relevant chunks from your documents, then ask an LLM to
+answer using only those chunks. This avoids hallucination and keeps
+answers grounded in your data.
 
-Interviewers: this file is intentionally verbose and documented to show
-how a production-style RAG flow is structured end-to-end.
+Flow for a typical "ask a question" request:
+  1. index_document(file_path)  -> chunks file, embeds chunks, stores in ChromaDB
+  2. ask_document(question, collection_name)  -> search_documents() finds top
+     chunks, build_rag_context() formats them, Claude generates answer from
+     that context only
+
+This module wires together:
+- chunker: splits PDF/text into overlapping chunks
+- SentenceTransformer: turns text into 384-d vectors (same model for docs and query)
+- ChromaDB: stores vectors, runs nearest-neighbor search
+- Anthropic Claude: generates the final answer from retrieved context
+
+All public functions have Google-style docstrings; inline comments explain
+non-obvious steps so a junior developer can follow the pipeline from this file alone.
 """
 
 from __future__ import annotations
@@ -26,17 +36,24 @@ from dotenv import load_dotenv
 # Load environment variables (e.g., ANTHROPIC_API_KEY from .env)
 load_dotenv()
 
+# Claude model used for generating answers. Haiku is fast and cost-effective.
 CURRENT_MODEL = "claude-haiku-4-5"
+
 #
 # Global model + client singletons
 # --------------------------------
-# These are expensive to construct, so we do it once at import time and
-# reuse them across all RAG operations.
+# These are expensive to construct (embedding model loads ~80MB, ChromaDB
+# opens a connection), so we create them once at import time and reuse
+# them for every RAG operation instead of re-loading per request.
 #
 print("Loading embedding model...")
+# all-MiniLM-L6-v2 produces 384-dimensional vectors; same model must be
+# used for both indexing and querying so distances are comparable.
 EMBEDDING_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
 print("Embedding model loaded.")
 
+# PersistentClient writes to disk (./chroma_db) so data survives restarts.
+# Contrast with EphemeralClient, which is in-memory only.
 CHROMA_CLIENT = chromadb.PersistentClient(path="./chroma_db")
 
 ANTHROPIC_CLIENT = anthropic.Anthropic(
@@ -45,29 +62,49 @@ ANTHROPIC_CLIENT = anthropic.Anthropic(
 
 
 def get_or_create_collection(collection_name: str):
-    """
-    Return an existing ChromaDB collection or create a new one.
+    """Return an existing ChromaDB collection or create a new one.
 
-    This helper prevents errors when indexing into a collection name that may
-    or may not already exist. For indexing flows that need a clean slate,
-    index_document will explicitly delete before recreating.
+    A "collection" in ChromaDB is like a table: it holds one set of document
+    chunks and their embeddings. This helper is used when you want to add to
+    or query a collection without caring whether it already exists. For
+    full re-indexing, index_document() instead deletes and recreates the
+    collection so there is no stale data.
+
+    Args:
+        collection_name: Unique name for the collection (e.g. "company_policy").
+
+    Returns:
+        The ChromaDB collection object (existing or newly created).
     """
     existing_collections = CHROMA_CLIENT.list_collections()
     for coll in existing_collections:
         if coll.name == collection_name:
             return coll
+    # No match: create a new empty collection with this name.
     return CHROMA_CLIENT.create_collection(collection_name)
 
 
 def index_document(file_path: str, collection_name: str | None = None) -> Dict[str, Any]:
-    """
-    Chunk a document file, embed the chunks, and store them in ChromaDB.
+    """Chunk a document file, embed the chunks, and store them in ChromaDB.
 
-    - If collection_name is None, we derive it from the filename (without
-      extension), e.g. 'company_policy.pdf' -> 'company_policy'.
-    - If a collection with that name already exists, it is deleted and
-      recreated so that re-indexing fully replaces old content.
-    - Chunks are embedded in a single batch for performance.
+    This is the "indexing" step of RAG: we turn a PDF or text file into
+    many small overlapping chunks, convert each chunk to a vector (embedding),
+    and save those vectors in ChromaDB so we can later find the most relevant
+    chunks for any question. If you re-call this with the same collection
+    name, the old collection is deleted first so you never have duplicate
+    or stale chunks.
+
+    Args:
+        file_path: Path to a .txt or .pdf file (see chunker.chunk_file).
+        collection_name: Optional. If None, derived from filename without
+            extension (e.g. "report.pdf" -> "report").
+
+    Returns:
+        Dict with keys: collection_name, chunks_indexed (int), source_file.
+
+    Raises:
+        FileNotFoundError: If file_path does not exist.
+        ValueError: If file type is not supported (raised by chunk_file).
     """
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File does not exist: {file_path}")
@@ -76,17 +113,18 @@ def index_document(file_path: str, collection_name: str | None = None) -> Dict[s
         base = os.path.basename(file_path)
         collection_name = os.path.splitext(base)[0]
 
-    # Start from a clean collection for this document so we do not mix
-    # stale and fresh content for the same logical source.
+    # Delete existing collection if present. This way re-uploading the same
+    # document fully replaces old chunks instead of appending duplicates.
     try:
         CHROMA_CLIENT.delete_collection(collection_name)
     except Exception:
-        # It's fine if the collection does not exist yet.
+        # Collection may not exist yet on first index; ignore.
         pass
 
     collection = CHROMA_CLIENT.create_collection(collection_name)
 
-    # Chunk the file into overlapping passages with metadata.
+    # chunk_file() reads the file, splits by .txt/.pdf, and returns
+    # (chunk_text, metadata) tuples with e.g. source_file, chunk_index.
     chunks_with_meta: List[Tuple[str, Dict[str, Any]]] = chunk_file(file_path)
     if not chunks_with_meta:
         return {
@@ -100,16 +138,17 @@ def index_document(file_path: str, collection_name: str | None = None) -> Dict[s
 
     for text, metadata in chunks_with_meta:
         texts.append(text)
-        # Record which logical collection this chunk belongs to so we can
-        # inspect or debug later.
+        # Add collection_name to metadata so we can filter or debug by
+        # collection later without storing it separately.
         enriched = dict(metadata)
         enriched["collection_name"] = collection_name
         metadatas.append(enriched)
 
-    # Batch-encode all chunks in one go; this is much faster than encoding
-    # each passage individually.
+    # Single batch encode: one GPU/CPU call for all chunks. Much faster
+    # than encoding one chunk at a time in a loop.
     embeddings = EMBEDDING_MODEL.encode(texts)
 
+    # ChromaDB requires a unique string id per document (chunk_0, chunk_1, ...).
     ids = [f"chunk_{i}" for i in range(len(texts))]
 
     collection.add(
@@ -127,8 +166,19 @@ def index_document(file_path: str, collection_name: str | None = None) -> Dict[s
 
 
 def _get_collection_or_raise(collection_name: str):
-    """
-    Retrieve a collection by name, raising a clear error if it does not exist.
+    """Return a ChromaDB collection by name, or raise if it does not exist.
+
+    Used internally by search_documents and ask_document so we fail fast with
+    a clear message instead of a cryptic ChromaDB error.
+
+    Args:
+        collection_name: Name of the collection to fetch.
+
+    Returns:
+        The ChromaDB collection object.
+
+    Raises:
+        ValueError: If no collection with that name exists.
     """
     existing = {c.name: c for c in CHROMA_CLIENT.list_collections()}
     if collection_name not in existing:
@@ -145,20 +195,34 @@ def search_documents(
     n_results: int = 4,
     distance_threshold: float = 1.4,
 ) -> List[Dict[str, Any]]:
-    """
-    Run a semantic search for the query against a specific collection.
+    """Run semantic search: find the most relevant document chunks for a query.
 
-    - Embeds the query with the shared embedding model.
-    - Queries ChromaDB for the top-k nearest passages.
-    - Filters out low-relevance hits based on a distance threshold.
-    - Returns a list of results with text, metadata, distance, and
-      a simple normalized relevance score in [0, 1].
+    We embed the query with the same model used for indexing so that query
+    and document vectors live in the same space. ChromaDB returns the
+    nearest neighbors by distance (lower = more similar). We then filter
+    out any result whose distance is above the threshold (low relevance)
+    and attach a simple 0–1 relevance score for the UI.
+
+    Args:
+        query: The user's question or search phrase.
+        collection_name: Which indexed document collection to search.
+        n_results: Maximum number of chunks to return (top-k).
+        distance_threshold: Chunks with distance above this are excluded.
+            Default 1.4 works well for L2 distance with our embedding model;
+            tune down for stricter relevance, up for more recall.
+
+    Returns:
+        List of dicts, each with keys: text, metadata, distance,
+        relevance_score. Empty list if query is blank or no results pass
+        the threshold.
     """
     if not query.strip():
         return []
 
     collection = _get_collection_or_raise(collection_name)
 
+    # Encode query the same way we encoded chunks: same model, same dimensions.
+    # encode([query]) returns shape (1, 384); we take [0] and convert to list.
     query_embedding = EMBEDDING_MODEL.encode([query])[0].tolist()
 
     results = collection.query(
@@ -167,6 +231,8 @@ def search_documents(
         include=["documents", "metadatas", "distances"],
     )
 
+    # ChromaDB returns dict of lists-of-lists: one inner list per query.
+    # We sent one query, so we take index [0] to get the first (and only) set.
     docs = results.get("documents", [[]])[0]
     metadatas = results.get("metadatas", [[]])[0]
     distances = results.get("distances", [[]])[0]
@@ -174,17 +240,15 @@ def search_documents(
     filtered: List[Dict[str, Any]] = []
 
     for text, meta, dist in zip(docs, metadatas, distances):
-        # Some backends may return None; we defensively skip those.
         if dist is None:
             continue
 
+        # Drop results that are too far from the query (not relevant enough).
         if dist > distance_threshold:
-            # Consider this low relevance and skip it from downstream RAG.
             continue
 
-        # A simple relevance score: smaller distance => higher score.
-        # We map distances into [0, 1] with a linear heuristic
-        # relevance = 1 - dist / 2, then clamp.
+        # Turn distance into a 0–1 score for UI: closer => higher score.
+        # Heuristic: score = 1 - dist/2, clamped. Not calibrated; just for display.
         raw_score = 1.0 - dist / 2.0
         relevance_score = max(0.0, min(1.0, raw_score))
 
@@ -201,20 +265,21 @@ def search_documents(
 
 
 def build_rag_context(search_results: List[Dict[str, Any]]) -> str:
-    """
-    Turn search results into a structured context string for the LLM.
+    """Format search results into a single context string for the LLM.
 
-    The format is:
+    The LLM is instructed to answer only from this context and to cite
+    passages by number. By labeling each chunk as [Passage 1], [Passage 2],
+    etc., we make it easy for the model to say "According to Passage 2, ..."
+    and for us to map that back to the actual source text.
 
-    CONTEXT FROM DOCUMENT:
+    Args:
+        search_results: List of dicts from search_documents(), each with
+            at least a "text" key.
 
-    [Passage 1]
-    <text>
-
-    [Passage 2]
-    <text>
-
-    This makes it easy for the model to cite which passage(s) it used.
+    Returns:
+        A single string: "CONTEXT FROM DOCUMENT:" followed by numbered
+        passages and their text, or a fallback message if search_results
+        is empty.
     """
     if not search_results:
         return "CONTEXT FROM DOCUMENT:\n\n(No relevant passages found.)"
@@ -224,19 +289,25 @@ def build_rag_context(search_results: List[Dict[str, Any]]) -> str:
     for idx, result in enumerate(search_results, start=1):
         lines.append(f"[Passage {idx}]")
         lines.append(result["text"])
-        lines.append("")  # blank line between passages
+        lines.append("")  # blank line between passages for readability
 
     return "\n".join(lines)
 
 
 def _estimate_claude_cost(input_tokens: int, output_tokens: int) -> float:
-    """
-    Rough cost estimate for Claude 3.5 Sonnet usage.
+    """Estimate the cost in USD for a Claude API call.
 
-    Pricing changes over time; these constants are based on public pricing
-    at the time of writing and are easy to adjust later.
+    Uses approximate per-million-token rates. Update the constants when
+    Anthropic changes pricing or when switching to a different model.
+
+    Args:
+        input_tokens: Number of tokens in the request (system + user message).
+        output_tokens: Number of tokens in the model's response.
+
+    Returns:
+        Estimated cost in dollars (e.g. 0.00234).
     """
-    # Dollars per million tokens (approximate).
+    # Dollars per million tokens; adjust for your model and region.
     INPUT_PER_MILLION = 3.0
     OUTPUT_PER_MILLION = 15.0
 
@@ -250,15 +321,23 @@ def ask_document(
     collection_name: str,
     n_results: int = 4,
 ) -> Dict[str, Any]:
-    """
-    High-level RAG entry point: answer a question about a specific document.
+    """Answer a question using only the content of an indexed document (RAG).
 
-    Steps:
-    1. Retrieve the top-k most relevant passages via semantic search.
-    2. If none are relevant, return a graceful "no context" answer.
-    3. Build a strict system + user prompt that forces Claude to ground
-       answers in the provided context only.
-    4. Call Claude and return the answer, sources, and cost estimate.
+    This is the main RAG workflow: (1) search for relevant chunks, (2) if
+    none pass the relevance threshold, return a "no context" message without
+    calling Claude; (3) otherwise build a context string and prompt Claude
+    to answer only from that context, then return the answer plus metadata.
+
+    Args:
+        question: The user's question in natural language.
+        collection_name: Name of the ChromaDB collection (from index_document).
+        n_results: How many top chunks to retrieve and pass to the LLM (default 4).
+
+    Returns:
+        Dict with: answer (str), sources (list of passage texts),
+        found_relevant_context (bool), input_tokens, output_tokens,
+        estimated_cost (float). If no relevant context, answer is a
+        fallback message and sources is empty.
     """
     search_results = search_documents(
         query=question,
@@ -266,6 +345,8 @@ def ask_document(
         n_results=n_results,
     )
 
+    # No chunks passed the distance threshold: don't call Claude.
+    # Return a fixed message so the UI can show "low confidence" or similar.
     if not search_results:
         return {
             "answer": (
@@ -281,6 +362,8 @@ def ask_document(
 
     context = build_rag_context(search_results)
 
+    # Strict system prompt: answer ONLY from context. Reduces hallucination
+    # and keeps answers grounded in the actual document.
     system_prompt = (
         "You are a precise document assistant. Answer questions using ONLY "
         "the context passages provided below. Do not use any outside "
@@ -289,6 +372,7 @@ def ask_document(
         "provided document. Always cite which passage(s) your answer comes from."
     )
 
+    # User message = context + question. Claude sees the passages and the question.
     user_prompt = f"{context}\n\nQuestion: {question}"
 
     response = ANTHROPIC_CLIENT.messages.create(
@@ -303,13 +387,13 @@ def ask_document(
         ],
     )
 
-    # Extract plain text from Claude's structured content response.
+    # response.content is a list of blocks (e.g. text, tool_use). We only
+    # want the text blocks; the API returns objects with .type and .text.
     answer_parts: List[str] = []
     for block in response.content:
         if hasattr(block, "type") and block.type == "text":
             answer_parts.append(block.text)
         elif isinstance(block, dict) and block.get("type") == "text":
-            # For robustness in case of dict-like blocks.
             answer_parts.append(block.get("text", ""))
 
     answer_text = "\n".join(part for part in answer_parts if part.strip())
@@ -319,7 +403,8 @@ def ask_document(
     output_tokens = getattr(usage, "output_tokens", 0)
     estimated_cost = _estimate_claude_cost(input_tokens, output_tokens)
 
-    # For transparency, we expose the raw passage texts used as sources.
+    # Return the exact passage texts we sent as context so the UI can
+    # show "Sources used" or let the user expand them.
     sources = [r["text"] for r in search_results]
 
     return {
@@ -333,12 +418,14 @@ def ask_document(
 
 
 def list_collections() -> List[Dict[str, Any]]:
-    """
-    Return a summary of all collections in the ChromaDB client.
+    """List all document collections and how many chunks each contains.
 
-    Each entry includes:
-    - name: collection name
-    - count: total number of stored chunks
+    Useful for dashboards or debugging: see which documents have been
+    indexed and how large each collection is.
+
+    Returns:
+        List of dicts with keys "name" (str) and "count" (int). Count
+        is -1 if the collection exists but count could not be read.
     """
     collections = CHROMA_CLIENT.list_collections()
     summary: List[Dict[str, Any]] = []
@@ -347,23 +434,21 @@ def list_collections() -> List[Dict[str, Any]]:
         try:
             count = coll.count()
         except Exception:
-            # In case of backend issues, we still want to list the name.
+            # Backend might fail on count(); still expose the collection name.
             count = -1
         summary.append({"name": coll.name, "count": count})
 
     return summary
 
 
+# ---------------------------------------------------------------------------
+# Demo: run this file directly to test the full pipeline (python rag_pipeline.py)
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    #
-    # End-to-end smoke test for the RAG pipeline.
-    #
-    # We:
-    # 1. Create a small synthetic Q3 earnings-style document.
-    # 2. Save it as test_doc.txt.
-    # 3. Index it into ChromaDB.
-    # 4. Ask three questions: clearly answerable, partially answerable, and
-    #    completely unanswerable, printing answers and cost for each.
+    # 1. Write a sample document to disk (simulates a user uploading a file).
+    # 2. Index it: chunk -> embed -> store in ChromaDB.
+    # 3. Ask three questions (answerable, partial, unanswerable) and print
+    #    answers, source previews, and token cost so you can verify behavior.
     #
 
     test_doc_text = """
