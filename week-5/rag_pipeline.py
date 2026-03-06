@@ -13,7 +13,7 @@ Flow for a typical "ask a question" request:
 
 This module wires together:
 - chunker: splits PDF/text into overlapping chunks
-- SentenceTransformer: turns text into 384-d vectors (same model for docs and query)
+- Voyage AI: turns text into 1024-d vectors (voyage-2; document vs query input_type)
 - ChromaDB: stores vectors, runs nearest-neighbor search
 - Anthropic Claude: generates the final answer from retrieved context
 
@@ -27,30 +27,31 @@ import os
 from typing import Any, Dict, List, Tuple
 
 import chromadb
-from sentence_transformers import SentenceTransformer
+import voyageai
 from chunker import chunk_file, chunk_text
 import anthropic
 from dotenv import load_dotenv
 
 
-# Load environment variables (e.g., ANTHROPIC_API_KEY from .env)
+# Load environment variables (ANTHROPIC_API_KEY, VOYAGE_API_KEY, etc.)
 load_dotenv()
 
 # Claude model used for generating answers. Haiku is fast and cost-effective.
 CURRENT_MODEL = "claude-haiku-4-5"
 
+# Voyage-2 produces 1024-dimensional embeddings. ChromaDB infers dimension from
+# the first add(); collections created with the old 384-d model must be
+# re-indexed (index_document deletes and recreates the collection, so this is automatic).
+VOYAGE_EMBEDDING_DIMENSION = 1024
+VOYAGE_MODEL = "voyage-2"
+
 #
-# Global model + client singletons
-# --------------------------------
-# These are expensive to construct (embedding model loads ~80MB, ChromaDB
-# opens a connection), so we create them once at import time and reuse
-# them for every RAG operation instead of re-loading per request.
+# Global client singletons
+# -------------------------
+# Voyage client is lightweight (API-based); ChromaDB keeps a connection.
+# We create them once at import and reuse for every RAG operation.
 #
-print("Loading embedding model...")
-# all-MiniLM-L6-v2 produces 384-dimensional vectors; same model must be
-# used for both indexing and querying so distances are comparable.
-EMBEDDING_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
-print("Embedding model loaded.")
+VOYAGE_CLIENT = voyageai.Client(api_key=os.getenv("VOYAGE_API_KEY"))
 
 # PersistentClient writes to disk (./chroma_db) so data survives restarts.
 # Contrast with EphemeralClient, which is in-memory only.
@@ -144,16 +145,20 @@ def index_document(file_path: str, collection_name: str | None = None) -> Dict[s
         enriched["collection_name"] = collection_name
         metadatas.append(enriched)
 
-    # Single batch encode: one GPU/CPU call for all chunks. Much faster
-    # than encoding one chunk at a time in a loop.
-    embeddings = EMBEDDING_MODEL.encode(texts)
+    # Single batch embed via Voyage AI (document input_type for indexing).
+    result = VOYAGE_CLIENT.embed(
+        texts,
+        model=VOYAGE_MODEL,
+        input_type="document",
+    )
+    embeddings = result.embeddings
 
     # ChromaDB requires a unique string id per document (chunk_0, chunk_1, ...).
     ids = [f"chunk_{i}" for i in range(len(texts))]
 
     collection.add(
         documents=texts,
-        embeddings=embeddings.tolist(),
+        embeddings=embeddings,
         ids=ids,
         metadatas=metadatas,
     )
@@ -221,9 +226,13 @@ def search_documents(
 
     collection = _get_collection_or_raise(collection_name)
 
-    # Encode query the same way we encoded chunks: same model, same dimensions.
-    # encode([query]) returns shape (1, 384); we take [0] and convert to list.
-    query_embedding = EMBEDDING_MODEL.encode([query])[0].tolist()
+    # Embed query with same model as chunks; use input_type="query" for search.
+    result = VOYAGE_CLIENT.embed(
+        [query],
+        model=VOYAGE_MODEL,
+        input_type="query",
+    )
+    query_embedding = result.embeddings[0]
 
     results = collection.query(
         query_embeddings=[query_embedding],
