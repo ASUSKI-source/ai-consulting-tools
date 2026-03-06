@@ -1,3 +1,11 @@
+# Ensure the app directory is on sys.path so sibling modules (smart_chunker, rag_pipeline, etc.)
+# load correctly when run via uvicorn (e.g. on Railway with --app-dir or different cwd).
+import sys
+from pathlib import Path as _Path
+_app_dir = str(_Path(__file__).resolve().parent)
+if _app_dir not in sys.path:
+    sys.path.insert(0, _app_dir)
+
 from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -69,7 +77,8 @@ create_tables()
 # Migrate existing documents table: add collection_group if missing (e.g. Railway PostgreSQL).
 try:
     inspector = inspect(engine)
-    if "documents" in inspector.get_table_names():
+    tables = inspector.get_table_names()
+    if "documents" in tables:
         columns = {col["name"] for col in inspector.get_columns("documents")}
         if "collection_group" not in columns:
             with engine.begin() as conn:
@@ -78,8 +87,10 @@ try:
                         "ALTER TABLE documents ADD COLUMN collection_group VARCHAR(100) DEFAULT 'default'"
                     )
                 )
-except Exception:
-    pass
+except Exception as e:
+    import traceback
+    print("Documents table migration (collection_group):", e)
+    traceback.print_exc()
 
 app.add_middleware(
     CORSMiddleware,
