@@ -322,7 +322,7 @@ input[type="text"]:focus {
     padding: 10px 14px;
     border-radius: 9999px;
     border: 1px solid var(--border);
-    background: #0f172a;
+    background: #747a93;
     color: var(--text-secondary);
     cursor: pointer;
     font-weight: 600;
