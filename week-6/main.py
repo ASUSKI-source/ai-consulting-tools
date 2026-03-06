@@ -9,11 +9,12 @@ import shutil
 import tempfile
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, inspect, text
 
 from database import (
     create_tables,
     get_db,
+    engine,
     Analysis,
     WatchlistItem,
     Document,
@@ -64,6 +65,21 @@ app = FastAPI(title='Market Analyzer API')
 
 # Ensure database tables exist each time the server starts.
 create_tables()
+
+# Migrate existing documents table: add collection_group if missing (e.g. Railway PostgreSQL).
+try:
+    inspector = inspect(engine)
+    if "documents" in inspector.get_table_names():
+        columns = {col["name"] for col in inspector.get_columns("documents")}
+        if "collection_group" not in columns:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "ALTER TABLE documents ADD COLUMN collection_group VARCHAR(100) DEFAULT 'default'"
+                    )
+                )
+except Exception:
+    pass
 
 app.add_middleware(
     CORSMiddleware,
