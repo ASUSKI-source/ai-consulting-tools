@@ -12,7 +12,7 @@ Flow for a typical "ask a question" request:
      that context only
 
 This module wires together:
-- chunker: splits PDF/text into overlapping chunks
+- smart_chunker: splits PDF/text at paragraph/sentence boundaries (no mid-sentence cuts)
 - Voyage AI: turns text into 1024-d vectors (voyage-2; document vs query input_type)
 - ChromaDB: stores vectors, runs nearest-neighbor search
 - Anthropic Claude: generates the final answer from retrieved context
@@ -24,15 +24,8 @@ non-obvious steps so a junior developer can follow the pipeline from this file a
 from __future__ import annotations
 
 import os
-import sys
-from typing import Any, Dict, List, Tuple
-
-# Ensure we can import the Week 6 smart_chunker module when running from Week 5.
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(BASE_DIR)
-SMART_CHUNKER_DIR = os.path.join(PROJECT_ROOT, "week-6")
-if SMART_CHUNKER_DIR not in sys.path:
-    sys.path.insert(0, SMART_CHUNKER_DIR)
+import difflib
+from typing import Any, Dict, List, Optional
 
 import chromadb
 import voyageai
@@ -53,6 +46,10 @@ CURRENT_MODEL = "claude-haiku-4-5"
 VOYAGE_EMBEDDING_DIMENSION = 1024
 VOYAGE_MODEL = "voyage-2"
 
+# Token budgeting for RAG context (avoids exceeding model context window).
+MAX_CONTEXT_TOKENS = 8000  # Max tokens to use for retrieved context
+TOKENS_PER_WORD = 1.3  # Approximate tokens per word (conservative estimate)
+
 #
 # Global client singletons
 # -------------------------
@@ -63,7 +60,9 @@ VOYAGE_CLIENT = voyageai.Client(api_key=os.getenv("VOYAGE_API_KEY"))
 
 # PersistentClient writes to disk (./chroma_db) so data survives restarts.
 # Contrast with EphemeralClient, which is in-memory only.
-CHROMA_CLIENT = chromadb.PersistentClient(path="./chroma_db")
+CHROMA_DIR = os.path.join(os.path.dirname(__file__), "chroma_db")
+CHROMA_CLIENT = chromadb.PersistentClient(path=CHROMA_DIR)
+print(f"ChromaDB persistent storage: {CHROMA_DIR}")
 
 ANTHROPIC_CLIENT = anthropic.Anthropic(
     api_key=os.getenv("ANTHROPIC_API_KEY"),
@@ -75,9 +74,7 @@ def get_or_create_collection(collection_name: str):
 
     A "collection" in ChromaDB is like a table: it holds one set of document
     chunks and their embeddings. This helper is used when you want to add to
-    or query a collection without caring whether it already exists. For
-    full re-indexing, index_document() instead deletes and recreates the
-    collection so there is no stale data.
+    or query a collection without caring whether it already exists.
 
     Args:
         collection_name: Unique name for the collection (e.g. "company_policy").
@@ -93,23 +90,128 @@ def get_or_create_collection(collection_name: str):
     return CHROMA_CLIENT.create_collection(collection_name)
 
 
-def index_document(file_path: str, collection_name: str | None = None) -> Dict[str, Any]:
+# Common stopwords to exclude from keyword overlap in reranking.
+_STOPWORDS = frozenset(
+    {
+        "the", "and", "for", "with", "that", "this", "from", "have", "been",
+        "are", "was", "were", "will", "would", "could", "should", "about",
+        "into", "through", "during", "before", "after", "above", "below",
+        "between", "under", "again", "further", "then", "once", "here", "there",
+        "when", "where", "why", "how", "all", "each", "both", "few", "more",
+        "most", "other", "some", "such", "only", "same", "than", "too", "just",
+    }
+)
+
+
+def rerank_results(
+    query: str,
+    results: List[Dict[str, Any]],
+    keyword_weight: float = 0.3,
+) -> List[Dict[str, Any]]:
+    """Re-sort results by semantic score plus keyword overlap bonus.
+
+    For each result: base_score = 1 - (distance/2); keyword_bonus from
+    important query words (len > 4, not stopwords) appearing in chunk;
+    final_score = base_score + keyword_bonus. Results are sorted by
+    final_score descending and each gets a 'final_score' key.
+    """
+    if not results:
+        return results
+
+    # Important words: length > 4, not stopwords (case-insensitive).
+    words = query.split()
+    important_words = [
+        w for w in words
+        if len(w) > 4 and w.lower() not in _STOPWORDS
+    ]
+    n_important = max(len(important_words), 1)
+
+    scored: List[Dict[str, Any]] = []
+    for r in results:
+        base_score = 1.0 - (r.get("distance", 0) / 2.0)
+        base_score = max(0.0, min(1.0, base_score))
+
+        chunk_text = (r.get("text") or "").lower()
+        matches = sum(1 for w in important_words if w.lower() in chunk_text)
+        keyword_bonus = (matches / n_important) * keyword_weight
+        final_score = base_score + keyword_bonus
+
+        r = dict(r)
+        r["final_score"] = final_score
+        scored.append(r)
+
+    scored.sort(key=lambda x: x["final_score"], reverse=True)
+    return scored
+
+
+def estimate_tokens(text: str) -> int:
+    """Approximate token count for a string.
+
+    Uses word count * TOKENS_PER_WORD. Real tokenization is model-specific:
+    punctuation and subword tokenization mean many words are split into
+    multiple tokens, so ~1.3 tokens per word is a conservative estimate
+    that errs on the high side for budgeting.
+    """
+    return int(len(text.split()) * TOKENS_PER_WORD)
+
+
+def budget_context(
+    search_results: List[Dict[str, Any]],
+    max_tokens: int = MAX_CONTEXT_TOKENS,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Trim search results to fit within a token budget (best-first).
+
+    Adds results one by one until adding the next would exceed max_tokens.
+    Returns the trimmed list and a stats dict for logging.
+    """
+    if not search_results:
+        return [], {
+            "results_included": 0,
+            "results_excluded": 0,
+            "estimated_tokens": 0,
+            "budget_used_pct": 0.0,
+        }
+    included: List[Dict[str, Any]] = []
+    total_tokens = 0
+    for r in search_results:
+        text = r.get("text", "")
+        tokens = estimate_tokens(text)
+        if total_tokens + tokens > max_tokens:
+            break
+        included.append(r)
+        total_tokens += tokens
+    n_included = len(included)
+    n_excluded = len(search_results) - n_included
+    budget_used_pct = (total_tokens / max_tokens * 100.0) if max_tokens else 0.0
+    return included, {
+        "results_included": n_included,
+        "results_excluded": n_excluded,
+        "estimated_tokens": total_tokens,
+        "budget_used_pct": budget_used_pct,
+    }
+
+
+def index_document(file_path: str, collection_group: str = "default") -> Dict[str, Any]:
     """Chunk a document file, embed the chunks, and store them in ChromaDB.
 
     This is the "indexing" step of RAG: we turn a PDF or text file into
     many small overlapping chunks, convert each chunk to a vector (embedding),
     and save those vectors in ChromaDB so we can later find the most relevant
-    chunks for any question. If you re-call this with the same collection
-    name, the old collection is deleted first so you never have duplicate
-    or stale chunks.
+    chunks for any question.
+
+    A *collection group* is a logical bucket of related documents that all
+    share a single ChromaDB collection. Each document in the group is
+    distinguished by its source_file metadata.
 
     Args:
-        file_path: Path to a .txt or .pdf file (see smart_chunker.chunk_file_smart).
-        collection_name: Optional. If None, derived from filename without
-            extension (e.g. "report.pdf" -> "report").
+        file_path: Path to a .txt, .pdf, or .md file (see smart_chunker.chunk_file_smart).
+        collection_group: Logical group name; this becomes the ChromaDB
+            collection name. All documents in the same group share one
+            collection.
 
     Returns:
-        Dict with keys: collection_name, chunks_indexed (int), source_file.
+        Dict with keys: collection_name, collection_group, chunks_indexed (int),
+        source_file.
 
     Raises:
         FileNotFoundError: If file_path does not exist.
@@ -118,47 +220,50 @@ def index_document(file_path: str, collection_name: str | None = None) -> Dict[s
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File does not exist: {file_path}")
 
-    if collection_name is None:
-        base = os.path.basename(file_path)
-        collection_name = os.path.splitext(base)[0]
+    # Collection name in ChromaDB is the logical collection_group.
+    collection_name = collection_group
+    filename = os.path.basename(file_path)
 
-    # Delete existing collection if present. This way re-uploading the same
-    # document fully replaces old chunks instead of appending duplicates.
-    try:
-        CHROMA_CLIENT.delete_collection(collection_name)
-    except Exception:
-        # Collection may not exist yet on first index; ignore.
-        pass
+    # Get or create the shared collection for this group without
+    # deleting other documents that belong to the same group.
+    collection = get_or_create_collection(collection_name)
 
-    collection = CHROMA_CLIENT.create_collection(collection_name)
+    # Remove any existing chunks for this specific document from the group.
+    collection.delete(where={"source_file": filename})
 
     # chunk_file_smart() reads the file, handles .txt/.pdf/.md, and returns
-    # a list of dicts with "text" and "metadata" (including word/char counts).
+    # a list of dicts with "text" and "metadata" (word_count, char_count,
+    # starts_with, etc.) for debugging and threshold_test output.
     chunks_with_meta: List[Dict[str, Any]] = chunk_file_smart(file_path)
     if not chunks_with_meta:
         return {
             "collection_name": collection_name,
+            "collection_group": collection_group,
             "chunks_indexed": 0,
-            "source_file": os.path.basename(file_path),
+            "source_file": filename,
         }
 
     texts: List[str] = []
     metadatas: List[Dict[str, Any]] = []
 
-    for item in chunks_with_meta:
+    for i, item in enumerate(chunks_with_meta):
         text = item.get("text", "")
         metadata = item.get("metadata", {}) or {}
-
         if not text.strip():
             continue
 
         texts.append(text)
-        # Add collection_name to metadata so we can filter or debug by
-        # collection later without storing it separately. All existing
-        # smart_chunker fields (word_count, char_count, starts_with, etc.)
-        # are preserved.
+
+        # Preserve smart_chunker metadata (word_count, char_count, starts_with),
+        # and ensure required fields for collection groups are present.
         enriched = dict(metadata)
+        enriched["source_file"] = filename
         enriched["collection_name"] = collection_name
+        enriched["collection_group"] = collection_group
+        enriched["chunk_index"] = i
+        # Ensure word_count is present even if upstream changes.
+        if "word_count" not in enriched:
+            enriched["word_count"] = len(text.split())
         metadatas.append(enriched)
 
     # Single batch embed via Voyage AI (document input_type for indexing).
@@ -170,7 +275,7 @@ def index_document(file_path: str, collection_name: str | None = None) -> Dict[s
     embeddings = result.embeddings
 
     # ChromaDB requires a unique string id per document (chunk_0, chunk_1, ...).
-    ids = [f"chunk_{i}" for i in range(len(texts))]
+    ids = [f"{filename}chunk_{i}" for i in range(len(texts))]
 
     collection.add(
         documents=texts,
@@ -215,7 +320,8 @@ def search_documents(
     collection_name: str,
     n_results: int = 4,
     distance_threshold: float = 1.4,
-) -> List[Dict[str, Any]]:
+    source_file: Optional[str] = None,
+) -> tuple[List[Dict[str, Any]], str]:
     """Run semantic search: find the most relevant document chunks for a query.
 
     We embed the query with the same model used for indexing so that query
@@ -226,19 +332,22 @@ def search_documents(
 
     Args:
         query: The user's question or search phrase.
-        collection_name: Which indexed document collection to search.
+        collection_name: Which indexed document collection (group) to search.
         n_results: Maximum number of chunks to return (top-k).
         distance_threshold: Chunks with distance above this are excluded.
             Default 1.4 works well for L2 distance with our embedding model;
             tune down for stricter relevance, up for more recall.
+        source_file: Optional filename filter. If provided, restricts search
+            to chunks whose metadata.source_file matches this value.
 
     Returns:
-        List of dicts, each with keys: text, metadata, distance,
-        relevance_score. Empty list if query is blank or no results pass
-        the threshold.
+        Tuple of (list of result dicts, top_chunk_before_rerank_snippet).
+        Each result has text, source_file, distance, chunk_index,
+        relevance_score, final_score (after rerank). If no results,
+        returns ([], "").
     """
     if not query.strip():
-        return []
+        return [], ""
 
     collection = _get_collection_or_raise(collection_name)
 
@@ -250,15 +359,18 @@ def search_documents(
     )
     query_embedding = result.embeddings[0]
 
+    where = {"source_file": source_file} if source_file else None
+
     results = collection.query(
         query_embeddings=[query_embedding],
         n_results=n_results,
         include=["documents", "metadatas", "distances"],
+        where=where,
     )
 
     # Guard against empty results (small collection, no chunks found).
     if not results.get("documents") or not results["documents"][0]:
-        return []
+        return [], ""
 
     # ChromaDB returns dict of lists-of-lists: one inner list per query.
     # We sent one query, so we take index [0] to get the first (and only) set.
@@ -284,43 +396,129 @@ def search_documents(
         filtered.append(
             {
                 "text": text,
-                "metadata": meta,
+                "source_file": (meta or {}).get("source_file", "unknown"),
                 "distance": float(dist),
+                "chunk_index": (meta or {}).get("chunk_index", 0),
                 "relevance_score": relevance_score,
             }
         )
 
-    return filtered
+    # Capture top chunk before rerank for logging.
+    top_before_rerank = ""
+    if filtered:
+        top_before_rerank = (filtered[0].get("text") or "").replace("\n", " ").strip()[:40]
+
+    reranked = rerank_results(query, filtered)
+    return reranked, top_before_rerank
 
 
-def build_rag_context(search_results: List[Dict[str, Any]]) -> str:
+def search_all_collections(
+    query: str,
+    n_results_per_collection: int = 3,
+    distance_threshold: float = 1.4,
+) -> List[Dict[str, Any]]:
+    """Search across all ChromaDB collections (groups) for a query.
+
+    This helper fans out the search to every existing collection, merges
+    the results, deduplicates highly similar chunks, and returns a
+    distance-sorted list.
+
+    Args:
+        query: The user's question or search phrase.
+        n_results_per_collection: How many top chunks to retrieve from each
+            collection before merging.
+        distance_threshold: Passed through to search_documents().
+
+    Returns:
+        List of result dicts (same shape as search_documents) with at most
+        n_results_per_collection * 2 items overall. Each result's metadata
+        includes a collection_group key so callers can see which group
+        (collection) it came from.
+    """
+    all_results: List[Dict[str, Any]] = []
+
+    collections_summary = list_collections()
+    if not collections_summary or not query.strip():
+        return []
+
+    def is_duplicate(existing: List[Dict[str, Any]], candidate_text: str) -> bool:
+        """Return True if candidate_text is >90% similar to any existing text."""
+        for r in existing:
+            existing_text = r.get("text", "")
+            if not existing_text:
+                continue
+            ratio = difflib.SequenceMatcher(None, candidate_text, existing_text).ratio()
+            if ratio >= 0.9:
+                return True
+        return False
+
+    for coll in collections_summary:
+        coll_name = coll["name"]
+        per_coll_results, _ = search_documents(
+            query=query,
+            collection_name=coll_name,
+            n_results=n_results_per_collection,
+            distance_threshold=distance_threshold,
+        )
+
+        for r in per_coll_results:
+            text = r.get("text", "")
+            if not text or is_duplicate(all_results, text):
+                continue
+
+            # Add collection_group at top level for downstream attribution.
+            r = dict(r)
+            r["collection_group"] = coll_name
+            all_results.append(r)
+
+    # Sort globally by distance (ascending = more similar).
+    all_results.sort(key=lambda r: r.get("distance", float("inf")))
+
+    limit = n_results_per_collection * 2
+    return all_results[:limit]
+
+
+def build_rag_context(
+    search_results: List[Dict[str, Any]],
+    max_tokens: int = MAX_CONTEXT_TOKENS,
+) -> tuple[str, Optional[Dict[str, Any]], List[Dict[str, Any]]]:
     """Format search results into a single context string for the LLM.
 
-    The LLM is instructed to answer only from this context and to cite
-    passages by number. By labeling each chunk as [Passage 1], [Passage 2],
-    etc., we make it easy for the model to say "According to Passage 2, ..."
-    and for us to map that back to the actual source text.
+    Applies token budgeting first, then builds the context from the
+    budgeted list. The LLM is instructed to answer only from this context
+    and to cite passages by number.
 
     Args:
         search_results: List of dicts from search_documents(), each with
-            at least a "text" key.
+            at least a "text" key (best-first).
+        max_tokens: Token budget for the context (default MAX_CONTEXT_TOKENS).
 
     Returns:
-        A single string: "CONTEXT FROM DOCUMENT:" followed by numbered
-        passages and their text, or a fallback message if search_results
-        is empty.
+        Tuple of (context_string, budget_info_dict, budgeted_results).
+        If search_results is empty, returns (fallback_message, None, []).
     """
     if not search_results:
-        return "CONTEXT FROM DOCUMENT:\n\n(No relevant passages found.)"
+        return (
+            "CONTEXT FROM DOCUMENT:\n\n(No relevant passages found.)",
+            None,
+            [],
+        )
+
+    budgeted_results, budget_info = budget_context(search_results, max_tokens=max_tokens)
+    if not budgeted_results:
+        return (
+            "CONTEXT FROM DOCUMENT:\n\n(No relevant passages found.)",
+            budget_info,
+            [],
+        )
 
     lines: List[str] = ["CONTEXT FROM DOCUMENT:", ""]
-
-    for idx, result in enumerate(search_results, start=1):
+    for idx, result in enumerate(budgeted_results, start=1):
         lines.append(f"[Passage {idx}]")
         lines.append(result["text"])
         lines.append("")  # blank line between passages for readability
 
-    return "\n".join(lines)
+    return "\n".join(lines), budget_info, budgeted_results
 
 
 def _estimate_claude_cost(input_tokens: int, output_tokens: int) -> float:
@@ -349,6 +547,7 @@ def ask_document(
     question: str,
     collection_name: str,
     n_results: int = 4,
+    source_file: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Answer a question using only the content of an indexed document (RAG).
 
@@ -359,19 +558,22 @@ def ask_document(
 
     Args:
         question: The user's question in natural language.
-        collection_name: Name of the ChromaDB collection (from index_document).
+        collection_name: Name of the ChromaDB collection/group (from index_document).
         n_results: How many top chunks to retrieve and pass to the LLM (default 4).
+        source_file: Optional filename to restrict search to a single document
+            within the collection group.
 
     Returns:
-        Dict with: answer (str), sources (list of passage texts),
-        found_relevant_context (bool), input_tokens, output_tokens,
-        estimated_cost (float). If no relevant context, answer is a
-        fallback message and sources is empty.
+        Dict with: answer (str), sources (list of dicts with text,
+        source_file, distance, chunk_index), found_relevant_context (bool),
+        input_tokens, output_tokens, estimated_cost (float). If no relevant
+        context, answer is a fallback message and sources is empty.
     """
-    search_results = search_documents(
+    search_results, top_before_rerank = search_documents(
         query=question,
         collection_name=collection_name,
         n_results=n_results,
+        source_file=source_file,
     )
 
     # No chunks passed the distance threshold: don't call Claude.
@@ -389,7 +591,9 @@ def ask_document(
             "estimated_cost": 0.0,
         }
 
-    context = build_rag_context(search_results)
+    context, budget_info, budgeted_results = build_rag_context(search_results)
+    num_retrieved = len(search_results)
+    num_included = len(budgeted_results)
 
     # Strict system prompt: answer ONLY from context. Reduces hallucination
     # and keeps answers grounded in the actual document.
@@ -406,7 +610,7 @@ def ask_document(
 
     response = ANTHROPIC_CLIENT.messages.create(
         model=CURRENT_MODEL,
-        max_tokens=800,
+        max_tokens=500,
         system=system_prompt,
         messages=[
             {
@@ -432,13 +636,131 @@ def ask_document(
     output_tokens = getattr(usage, "output_tokens", 0)
     estimated_cost = _estimate_claude_cost(input_tokens, output_tokens)
 
-    # Return the exact passage texts we sent as context so the UI can
-    # show "Sources used" or let the user expand them.
-    sources = [r["text"] for r in search_results]
+    # Return the budgeted source dicts (what we actually sent as context).
+    sources = budgeted_results
+
+    # One-line summary for development and debugging.
+    est_tokens = budget_info.get("estimated_tokens", 0) if budget_info else 0
+    top_after_rerank = (
+        (search_results[0].get("text") or "").replace("\n", " ").strip()[:40]
+        if search_results else ""
+    )
+    print(
+        f"[RAG] collection={collection_name} | chunks={num_included}/{num_retrieved} | "
+        f"tokens=~{est_tokens} | cost=${estimated_cost:.4f}"
+    )
+    print(
+        f"      | top_chunk_before_rerank: {top_before_rerank!r}"
+    )
+    print(
+        f"      | top_chunk_after_rerank: {top_after_rerank!r}"
+    )
 
     return {
         "answer": answer_text,
         "sources": sources,
+        "found_relevant_context": True,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "estimated_cost": estimated_cost,
+    }
+
+
+def ask_across_collections(
+    question: str,
+    n_results_per: int = 3,
+    distance_threshold: float = 1.4,
+) -> Dict[str, Any]:
+    """Answer a question using chunks drawn from all indexed collections.
+
+    This variant of ask_document() searches every ChromaDB collection (each
+    representing a collection_group), merges the best chunks, and builds a
+    context that clearly labels which collection and source file each
+    passage came from.
+
+    Args:
+        question: The user's question in natural language.
+        n_results_per: How many top chunks to pull from each collection
+            before merging (default 3).
+        distance_threshold: Maximum distance to accept when searching.
+
+    Returns:
+        Dict with: answer (str), sources (list of result dicts including
+        metadata with collection_group and source_file), found_relevant_context
+        (bool), input_tokens, output_tokens, estimated_cost (float).
+    """
+    search_results = search_all_collections(
+        query=question,
+        n_results_per_collection=n_results_per,
+        distance_threshold=distance_threshold,
+    )
+
+    if not search_results:
+        return {
+            "answer": (
+                "I could not find relevant information in any indexed "
+                "collection to answer this question."
+            ),
+            "sources": [],
+            "found_relevant_context": False,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost": 0.0,
+        }
+
+    # Build a context that labels each passage with its collection_group
+    # and source_file so the model can attribute correctly.
+    lines: List[str] = ["CONTEXT FROM MULTIPLE DOCUMENTS:", ""]
+
+    for idx, result in enumerate(search_results, start=1):
+        collection_group = result.get("collection_group", "unknown_group")
+        source_file = result.get("source_file", "unknown_file")
+        lines.append(f"[Passage {idx}] (Collection: {collection_group}, File: {source_file})")
+        lines.append(result.get("text", ""))
+        lines.append("")
+
+    context = "\n".join(lines)
+
+    system_prompt = (
+        "You are a precise document assistant. You are given passages drawn "
+        "from multiple document collections. Answer questions using ONLY "
+        "these passages. If the answer is not clearly present, say exactly: "
+        "I cannot find the answer to this question in the provided documents. "
+        "Always cite which passage(s) and which collection/file your answer "
+        "comes from."
+    )
+
+    user_prompt = f"{context}\n\nQuestion: {question}"
+
+    response = ANTHROPIC_CLIENT.messages.create(
+        model=CURRENT_MODEL,
+        max_tokens=800,
+        system=system_prompt,
+        messages=[
+            {
+                "role": "user",
+                "content": user_prompt,
+            }
+        ],
+    )
+
+    answer_parts: List[str] = []
+    for block in response.content:
+        if hasattr(block, "type") and block.type == "text":
+            answer_parts.append(block.text)
+        elif isinstance(block, dict) and block.get("type") == "text":
+            answer_parts.append(block.get("text", ""))
+
+    answer_text = "\n".join(part for part in answer_parts if part.strip())
+
+    usage = response.usage
+    input_tokens = getattr(usage, "input_tokens", 0)
+    output_tokens = getattr(usage, "output_tokens", 0)
+    estimated_cost = _estimate_claude_cost(input_tokens, output_tokens)
+
+    return {
+        "answer": answer_text,
+        "sources": search_results,
         "found_relevant_context": True,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
@@ -563,8 +885,11 @@ if __name__ == "__main__":
 
         print("\nSOURCES (first 160 characters of each passage):")
         for i, src in enumerate(result["sources"], start=1):
-            preview = src.replace("\n", " ")[:160]
-            print(f"[Passage {i}] {preview}...")
+            text = src.get("text", "") if isinstance(src, dict) else str(src)
+            preview = text.replace("\n", " ")[:160]
+            fname = src.get("source_file", "") if isinstance(src, dict) else ""
+            label = f" (from {fname})" if fname else ""
+            print(f"[Passage {i}]{label} {preview}...")
 
         print(
             "\nCost estimate: "
