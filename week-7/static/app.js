@@ -79,6 +79,40 @@ function stopLoading(button) {
     }
 }
 
+// --- Document Q&A phased loading (variable wait; phases give feedback) ---
+const docQaPhases = [
+    { id: 'phase-search', text: 'Searching document...', duration: 2000 },
+    { id: 'phase-budget', text: 'Selecting best passages...', duration: 1500 },
+    { id: 'phase-claude', text: 'Generating answer with Claude...', duration: 0 }
+];
+let loadingPhaseTimeoutId = null;
+
+function showLoadingPhases() {
+    document.getElementById('loading').style.display = 'block';
+    let currentPhase = 0;
+    const el = document.getElementById('loading-text');
+    if (!el) return;
+
+    function advancePhase() {
+        if (currentPhase < docQaPhases.length) {
+            el.textContent = docQaPhases[currentPhase].text;
+            if (docQaPhases[currentPhase].duration > 0) {
+                loadingPhaseTimeoutId = setTimeout(advancePhase, docQaPhases[currentPhase].duration);
+            }
+            currentPhase++;
+        }
+    }
+    advancePhase();
+}
+
+function hideLoadingPhases() {
+    if (loadingPhaseTimeoutId !== null) {
+        clearTimeout(loadingPhaseTimeoutId);
+        loadingPhaseTimeoutId = null;
+    }
+    document.getElementById('loading').style.display = 'none';
+}
+
 /**
  * Fades the results section in smoothly after data arrives.
  */
@@ -94,9 +128,20 @@ function fadeInResults() {
 
 // --- UI UTILITIES ---
 
+/** Category-specific icons for the error box. */
+const ERROR_ICONS = {
+    not_found: '🔍',
+    rate_limit: '⏱',
+    file_error: '📄',
+    unknown: '⚠️'
+};
+
 /**
  * Displays an error message with an auto-hide timer.
- * Accepts either a plain string or a structured {user_message, suggestion} object.
+ * Accepts either a plain string (backwards compatible) or a dict with
+ * { user_message, suggestion, category }.
+ * If dict: line 1 (larger) = user_message, line 2 (smaller, italic) = suggestion.
+ * Shows a category-specific icon before the message when category is present.
  * @param {string|object} errorData
  */
 function showError(errorData) {
@@ -104,11 +149,20 @@ function showError(errorData) {
     let html = '';
 
     if (typeof errorData === 'string') {
-        html = `<span>${errorData}</span>`;
+        html = `<span class="error-message-text">${escapeHtml(errorData)}</span>`;
     } else {
         const msg = errorData.user_message || 'An error occurred.';
         const hint = errorData.suggestion || '';
-        html = `<span><strong>${msg}</strong>${hint ? `<br><small>${hint}</small>` : ''}</span>`;
+        const category = (errorData.category || 'unknown').toLowerCase();
+        const icon = ERROR_ICONS[category] || ERROR_ICONS.unknown;
+        html = '<span class="error-message-content">';
+        html += `<span class="error-message-icon" aria-hidden="true">${icon}</span>`;
+        html += '<span class="error-message-body">';
+        html += `<span class="error-message-text">${escapeHtml(msg)}</span>`;
+        if (hint) {
+            html += `<br><span class="error-message-suggestion">${escapeHtml(hint)}</span>`;
+        }
+        html += '</span></span>';
     }
 
     html += `<span class="close-btn" onclick="hideError()">×</span>`;
@@ -247,7 +301,7 @@ async function loadStats() {
 
         el.textContent = `${total} analyses run  ·  ${unique} unique tickers  ·  Total AI cost: $${totalCost}`;
     } catch (err) {
-        console.error('loadStats error:', err);
+        console.error('Error in loadStats:', err);
         el.textContent = '';
     }
 }
@@ -466,17 +520,18 @@ async function saveHistoryNote(id, text) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ notes: text })
         });
-        const data = await resp.json();
+        const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
-            return showError(data.detail || 'Failed to save note.');
+            showError(data.detail || data.user_message || 'An error occurred.');
+            return;
         }
 
         showToast('Note saved');
         // Reload history so the updated note appears consistently.
         loadHistory(true);
     } catch (err) {
-        console.error('saveHistoryNote error:', err);
-        showError('Unable to save note.');
+        console.error('Error in saveHistoryNote:', err);
+        showError('Connection failed. Is the server running?');
     }
 }
 
@@ -506,12 +561,13 @@ async function loadHistory(reset = true) {
 
     try {
         const resp = await fetch(url);
+        const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
-            const err = await resp.json().catch(() => ({}));
-            return showError(err.detail || 'Failed to load history.');
+            showError(data.detail || data.user_message || 'An error occurred.');
+            return;
         }
 
-        const items = await resp.json();
+        const items = data;
 
         if (reset && items.length === 0) {
             listEl.innerHTML = `<div class="history-empty">No analyses yet. Run your first analysis above.</div>`;
@@ -535,8 +591,8 @@ async function loadHistory(reset = true) {
 
         historyOffset += items.length;
     } catch (err) {
-        console.error('loadHistory error:', err);
-        showError('Unable to load history.');
+        console.error('Error in loadHistory:', err);
+        showError('Connection failed. Is the server running?');
     }
 }
 
@@ -547,9 +603,10 @@ async function loadHistory(reset = true) {
 async function loadAnalysisById(id) {
     try {
         const resp = await fetch(`${API_BASE}/history/${id}`);
-        const data = await resp.json();
+        const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
-            return showError(data.detail || 'Failed to load saved analysis.');
+            showError(data.detail || data.user_message || 'An error occurred.');
+            return;
         }
 
         if (data.asset_type === 'stock') {
@@ -604,8 +661,8 @@ async function loadAnalysisById(id) {
 
         showToast('Loaded analysis from history');
     } catch (err) {
-        console.error('loadAnalysisById error:', err);
-        showError('Unable to load saved analysis.');
+        console.error('Error in loadAnalysisById:', err);
+        showError('Connection failed. Is the server running?');
     }
 }
 
@@ -665,10 +722,10 @@ async function addToWatchlist() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ticker, asset_type: assetType })
         });
-        const data = await resp.json();
-
+        const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
-            return showError(data.detail || 'Failed to add to watchlist.');
+            showError(data.detail || data.user_message || 'An error occurred.');
+            return;
         }
 
         if (data.already_exists) {
@@ -679,8 +736,8 @@ async function addToWatchlist() {
 
         loadWatchlist();
     } catch (err) {
-        console.error('addToWatchlist error:', err);
-        showError('Unable to add to watchlist.');
+        console.error('Error in addToWatchlist:', err);
+        showError('Connection failed. Is the server running?');
     }
 }
 
@@ -693,9 +750,10 @@ async function loadWatchlist() {
 
     try {
         const resp = await fetch(`${API_BASE}/watchlist`);
-        const data = await resp.json();
+        const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
-            return showError(data.detail || 'Failed to load watchlist.');
+            showError(data.detail || data.user_message || 'An error occurred.');
+            return;
         }
 
         if (!Array.isArray(data) && Array.isArray(data.assets)) {
@@ -715,8 +773,8 @@ async function loadWatchlist() {
 
         container.innerHTML = chipsHtml || '<span class="history-empty">No watchlist items yet.</span>';
     } catch (err) {
-        console.error('loadWatchlist error:', err);
-        showError('Unable to load watchlist.');
+        console.error('Error in loadWatchlist:', err);
+        showError('Connection failed. Is the server running?');
     }
 }
 
@@ -729,16 +787,17 @@ async function removeFromWatchlist(id) {
         const resp = await fetch(`${API_BASE}/watchlist/${id}`, {
             method: 'DELETE'
         });
-        const data = await resp.json();
+        const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
-            return showError(data.detail || 'Failed to remove from watchlist.');
+            showError(data.detail || data.user_message || 'An error occurred.');
+            return;
         }
 
         showToast('Removed from watchlist');
         loadWatchlist();
     } catch (err) {
-        console.error('removeFromWatchlist error:', err);
-        showError('Unable to remove from watchlist.');
+        console.error('Error in removeFromWatchlist:', err);
+        showError('Connection failed. Is the server running?');
     }
 }
 
@@ -774,9 +833,9 @@ function displayCompareResults(data) {
 async function loadCollections() {
     try {
         const resp = await fetch(`${API_BASE}/collections`);
-        const data = await resp.json();
+        const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
-            console.error('loadCollections error:', data.detail || data);
+            showError(data.detail || data.user_message || 'An error occurred.');
             return;
         }
         collectionsList = Array.isArray(data) ? data : [];
@@ -803,7 +862,8 @@ async function loadCollections() {
             }
         }
     } catch (err) {
-        console.error('loadCollections error:', err);
+        console.error('Error in loadCollections:', err);
+        showError('Connection failed. Is the server running?');
     }
 }
 function selectCollection(name) {
@@ -822,9 +882,10 @@ async function createCollection(name, description) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name: name.trim(), description: description ? description.trim() : null })
         });
-        const data = await resp.json();
+        const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
-            return showError(data.detail || 'Failed to create collection.');
+            showError(data.detail || data.user_message || 'An error occurred.');
+            return;
         }
         showToast('Collection created');
         document.getElementById('doc-create-collection-form').style.display = 'none';
@@ -833,8 +894,8 @@ async function createCollection(name, description) {
         loadCollections();
         loadDocuments();
     } catch (err) {
-        console.error('createCollection error:', err);
-        showError('Unable to create collection.');
+        console.error('Error in createCollection:', err);
+        showError('Connection failed. Is the server running?');
     }
 }
 function renderDocumentsList() {
@@ -866,16 +927,17 @@ async function uploadDocument(file) {
             method: 'POST',
             body: formData
         });
-        const data = await resp.json();
+        const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
-            return showError(data.detail || data.message || 'Failed to upload document.');
+            showError(data.detail || data.user_message || 'An error occurred.');
+            return;
         }
         showToast('Document indexed successfully');
         loadDocuments();
         loadCollections();
     } catch (err) {
-        console.error('uploadDocument error:', err);
-        showError('Unable to upload document.');
+        console.error('Error in uploadDocument:', err);
+        showError('Connection failed. Is the server running?');
     } finally {
         if (statusEl) {
             statusEl.textContent = '';
@@ -888,9 +950,10 @@ async function loadDocuments() {
     if (!container) return;
     try {
         const resp = await fetch(`${API_BASE}/documents`);
-        const data = await resp.json();
+        const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
-            return showError(data.detail || 'Failed to load documents.');
+            showError(data.detail || data.user_message || 'An error occurred.');
+            return;
         }
         allDocuments = Array.isArray(data) ? data : [];
         if (allDocuments.length === 0) {
@@ -899,8 +962,8 @@ async function loadDocuments() {
         }
         renderDocumentsList();
     } catch (err) {
-        console.error('loadDocuments error:', err);
-        showError('Unable to load documents.');
+        console.error('Error in loadDocuments:', err);
+        showError('Connection failed. Is the server running?');
     }
 }
 function selectDocument(collectionName, filename) {
@@ -933,9 +996,9 @@ async function loadDocumentHistory(collectionName) {
     if (!container) return;
     try {
         const resp = await fetch(`${API_BASE}/documents/${encodeURIComponent(collectionName)}/history`);
-        const data = await resp.json();
+        const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
-            console.error('loadDocumentHistory error:', data.detail || data);
+            showError(data.detail || data.user_message || 'An error occurred.');
             return;
         }
         if (!Array.isArray(data) || data.length === 0) {
@@ -958,7 +1021,8 @@ async function loadDocumentHistory(collectionName) {
             `)
             .join('');
     } catch (err) {
-        console.error('loadDocumentHistory error:', err);
+        console.error('Error in loadDocumentHistory:', err);
+        showError('Connection failed. Is the server running?');
     }
 }
 function renderSourceAttributions(sources) {
@@ -1000,6 +1064,7 @@ async function askQuestion() {
     const attributionsEl = document.getElementById('doc-source-attributions');
     if (answerEl) answerEl.textContent = '';
     if (attributionsEl) attributionsEl.innerHTML = '';
+    showLoadingPhases();
     try {
         let resp;
         if (scope === 'all') {
@@ -1023,9 +1088,11 @@ async function askQuestion() {
                 body: JSON.stringify(body)
             });
         }
-        const data = await resp.json();
+        const data = await resp.json().catch(() => ({}));
+        hideLoadingPhases();
         if (!resp.ok) {
-            return showError(data.detail || 'Failed to ask question.');
+            showError(data.detail || data.user_message || 'An error occurred.');
+            return;
         }
         const costEl = document.getElementById('doc-cost');
         const confEl = document.getElementById('doc-confidence-badge');
@@ -1080,8 +1147,9 @@ async function askQuestion() {
             loadDocumentHistory(currentDocument.collectionName);
         }
     } catch (err) {
-        console.error('askQuestion error:', err);
-        showError('Unable to ask question.');
+        hideLoadingPhases();
+        console.error('Error in askQuestion:', err);
+        showError('Connection failed. Is the server running?');
     }
 }
 async function deleteDocument(collectionName) {
@@ -1092,9 +1160,10 @@ async function deleteDocument(collectionName) {
         const resp = await fetch(`${API_BASE}/documents/${encodeURIComponent(collectionName)}`, {
             method: 'DELETE'
         });
-        const data = await resp.json();
+        const data = await resp.json().catch(() => ({}));
         if (!resp.ok) {
-            return showError(data.detail || 'Failed to delete document.');
+            showError(data.detail || data.user_message || 'An error occurred.');
+            return;
         }
         showToast('Document deleted');
         if (currentDocument.collectionName === collectionName) {
@@ -1104,8 +1173,8 @@ async function deleteDocument(collectionName) {
         }
         loadDocuments();
     } catch (err) {
-        console.error('deleteDocument error:', err);
-        showError('Unable to delete document.');
+        console.error('Error in deleteDocument:', err);
+        showError('Connection failed. Is the server running?');
     }
 }
 function setupDragAndDrop() {
@@ -1156,16 +1225,17 @@ async function analyzeStock() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ticker })
         });
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
         stopLoading(btn);
-        if (response.ok) {
-            displayStockResults(data);
-            loadStats();
+        if (!response.ok) {
+            showError(data.detail || data.user_message || 'An error occurred.');
+            return;
         }
-        else showError(data.detail || 'Error analyzing stock.');
+        displayStockResults(data);
+        loadStats();
     } catch (err) {
         stopLoading(btn);
-        console.error('analyzeStock error:', err);
+        console.error('Error in analyzeStock:', err);
         showError('Connection failed. Is the server running?');
     }
 }
@@ -1183,16 +1253,17 @@ async function analyzeCrypto() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ coin_id: coinId })
         });
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
         stopLoading(btn);
-        if (response.ok) {
-            displayCryptoResults(data);
-            loadStats();
+        if (!response.ok) {
+            showError(data.detail || data.user_message || 'An error occurred.');
+            return;
         }
-        else showError(data.detail || 'Error analyzing crypto.');
+        displayCryptoResults(data);
+        loadStats();
     } catch (err) {
         stopLoading(btn);
-        console.error('analyzeCrypto error:', err);
+        console.error('Error in analyzeCrypto:', err);
         showError('Connection failed. Is the server running?');
     }
 }
@@ -1214,13 +1285,16 @@ async function compareAssets() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ asset1: a1, asset1_type: t1, asset2: a2, asset2_type: t2 })
         });
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
         stopLoading(btn);
-        if (response.ok) displayCompareResults(data);
-        else showError(data.detail || 'Comparison failed.');
+        if (!response.ok) {
+            showError(data.detail || data.user_message || 'An error occurred.');
+            return;
+        }
+        displayCompareResults(data);
     } catch (err) {
         stopLoading(btn);
-        console.error('compareAssets error:', err);
+        console.error('Error in compareAssets:', err);
         showError('Connection failed. Is the server running?');
     }
 }

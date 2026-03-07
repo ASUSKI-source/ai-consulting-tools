@@ -61,11 +61,12 @@
 
         <div id="loading" style="display: none;">
             <div class="spinner"></div>
-            <p>Fetching data and generating analysis...</p>
+            <p id="loading-text">Fetching data and generating analysis...</p>
         </div>
 
-        <div id="error-message" class="error-box" style="display: none;">
-            </div>
+        <div id="error-message" class="error-box" role="alert" aria-live="polite" style="display: none;">
+            <!-- Content injected by showError(): icon + user_message (line 1) + suggestion (line 2, smaller italic). -->
+        </div>
 
         <section id="results" class="results-section" style="display: none;">
             <div class="results-header">

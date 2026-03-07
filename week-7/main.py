@@ -29,6 +29,7 @@ from database import (
     QAHistory,
     CollectionGroup,
 )
+from error_messages import get_user_message, status_code_for_category
 
 from stock_data import get_stock_data
 from crypto_data import get_crypto_data
@@ -161,7 +162,11 @@ def health():
     try:
         return {'healthy': True}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        info = get_user_message(e)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
 
 # Test endpoint: accepts a ticker path parameter and echoes it back (uppercased).
@@ -170,7 +175,11 @@ def test_ticker(ticker: str):
     try:
         return {'ticker': ticker.upper(), 'received': True}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        info = get_user_message(e)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
 
 # Global stats endpoint: summarizes usage across all saved analyses.
@@ -220,19 +229,25 @@ def analyze_stock_endpoint(
         ticker = request.ticker.upper()
         stock_data = get_stock_data(ticker)
     except ValueError as e:
+        info = get_user_message(e, request.ticker)
         raise HTTPException(
-            status_code=404,
-            detail=f'Could not fetch data for {request.ticker}',
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        info = get_user_message(e)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
     try:
         prices = stock_data.get('history') or []
         if not prices:
+            info = get_user_message(ValueError('not found'), request.ticker)
             raise HTTPException(
-                status_code=404,
-                detail=f'Could not fetch data for {request.ticker}',
+                status_code=status_code_for_category(info['category']),
+                detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
             )
 
         sma_5 = calculate_sma(prices, 5)
@@ -252,7 +267,11 @@ def analyze_stock_endpoint(
 
         api_key = os.getenv('ANTHROPIC_API_KEY')
         if not api_key:
-            raise HTTPException(status_code=500, detail='ANTHROPIC_API_KEY not set')
+            info = get_user_message(ValueError('api_key not set'))
+            raise HTTPException(
+                status_code=status_code_for_category(info['category']),
+                detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+            )
 
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
@@ -333,7 +352,11 @@ def analyze_stock_endpoint(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        info = get_user_message(e)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
 
 # POST /analyze/crypto — Input: JSON body with coin_id (CoinGecko ID). Fetches crypto data,
@@ -347,20 +370,29 @@ def analyze_crypto_endpoint(
     try:
         coin_id = request.coin_id.lower()
         crypto_data = get_crypto_data(coin_id)
-    except ValueError:
+    except ValueError as e:
+        info = get_user_message(e, request.coin_id)
         raise HTTPException(
-            status_code=404,
-            detail=f'Coin not found: {request.coin_id}. Check the CoinGecko ID.',
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        info = get_user_message(e)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
     try:
         formatted_prompt = build_crypto_analysis_prompt(crypto_data)
 
         api_key = os.getenv('ANTHROPIC_API_KEY')
         if not api_key:
-            raise HTTPException(status_code=500, detail='ANTHROPIC_API_KEY not set')
+            info = get_user_message(ValueError('api_key not set'))
+            raise HTTPException(
+                status_code=status_code_for_category(info['category']),
+                detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+            )
 
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
@@ -434,7 +466,11 @@ def analyze_crypto_endpoint(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        info = get_user_message(e)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
 
 # POST /analyze/compare — Input: JSON with asset1, asset2, asset1_type, asset2_type.
@@ -449,9 +485,17 @@ def analyze_compare_endpoint(
         prompt1, label1 = _get_prompt_and_label(request.asset1, request.asset1_type)
         prompt2, label2 = _get_prompt_and_label(request.asset2, request.asset2_type)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        info = get_user_message(e, 'comparison assets')
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        info = get_user_message(e)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
     try:
         comparison_instructions = (
@@ -470,7 +514,11 @@ def analyze_compare_endpoint(
 
         api_key = os.getenv('ANTHROPIC_API_KEY')
         if not api_key:
-            raise HTTPException(status_code=500, detail='ANTHROPIC_API_KEY not set')
+            info = get_user_message(ValueError('api_key not set'))
+            raise HTTPException(
+                status_code=status_code_for_category(info['category']),
+                detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+            )
 
         client = anthropic.Anthropic(api_key=api_key)
         response = client.messages.create(
@@ -522,7 +570,11 @@ def analyze_compare_endpoint(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        info = get_user_message(e)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
 
 # --- RAG document + Q&A endpoints backed by ChromaDB and SQLAlchemy ---
@@ -542,9 +594,10 @@ def upload_document(
         ext = ext.lower()
 
         if ext not in {'.txt', '.pdf'}:
+            info = get_user_message(ValueError('unsupported file'))
             raise HTTPException(
-                status_code=400,
-                detail='Only .txt and .pdf files supported',
+                status_code=status_code_for_category(info['category']),
+                detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
             )
 
         tmp_dir = tempfile.mkdtemp()
@@ -614,9 +667,10 @@ def upload_document(
             db.refresh(group)
         except Exception as e:
             db.rollback()
+            info = get_user_message(e, 'document record')
             raise HTTPException(
-                status_code=500,
-                detail=f'Failed to save document record: {e}',
+                status_code=status_code_for_category(info['category']),
+                detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
             )
 
         return {
@@ -633,7 +687,11 @@ def upload_document(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        info = get_user_message(e)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
 
 @app.post('/documents/ask')
@@ -653,7 +711,11 @@ def ask_document_endpoint(
             )
         except ValueError as e:
             # Typically thrown if the collection does not exist.
-            raise HTTPException(status_code=404, detail=str(e))
+            info = get_user_message(e, payload.collection_name)
+            raise HTTPException(
+                status_code=status_code_for_category(info['category']),
+                detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+            )
 
         # Best-effort persistence of the Q&A interaction.
         try:
@@ -677,7 +739,11 @@ def ask_document_endpoint(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        info = get_user_message(e)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
 
 @app.get('/documents')
@@ -700,7 +766,11 @@ def list_documents(db: Session = Depends(get_db)):
             for d in docs
         ]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        info = get_user_message(e)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
 
 @app.get('/documents/{collection_name}/history')
@@ -731,7 +801,11 @@ def get_document_history(
             for qa in qas
         ]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        info = get_user_message(e)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
 
 @app.delete('/documents/{collection_name}')
@@ -760,7 +834,11 @@ def delete_document(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        info = get_user_message(e)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
 
 # --- Analysis history endpoints backed by the SQLAlchemy database ---
@@ -819,7 +897,11 @@ def get_history_item(
 
     analysis = db.query(Analysis).filter(Analysis.id == analysis_id).first()
     if not analysis:
-        raise HTTPException(status_code=404, detail='Analysis not found')
+        info = get_user_message(ValueError('not found'), 'analysis')
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
     return {
         'id': analysis.id,
@@ -855,12 +937,20 @@ def ask_all_documents(
     try:
         question = payload.get('question', '')
         if not isinstance(question, str) or not question.strip():
-            raise HTTPException(status_code=400, detail='question is required')
+            info = get_user_message(ValueError('Invalid input'), 'question')
+            raise HTTPException(
+                status_code=status_code_for_category(info['category']),
+                detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+            )
 
         try:
             result = ask_across_collections(question=question)
         except ValueError as e:
-            raise HTTPException(status_code=404, detail=str(e))
+            info = get_user_message(e)
+            raise HTTPException(
+                status_code=status_code_for_category(info['category']),
+                detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+            )
 
         # Optionally, you could persist a QAHistory row here with a special
         # collection_name like "__all__" if you want to track these queries.
@@ -869,7 +959,11 @@ def ask_all_documents(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        info = get_user_message(e)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
 
 @app.get('/collections')
@@ -892,7 +986,11 @@ def list_collection_groups(db: Session = Depends(get_db)):
             for g in groups
         ]
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        info = get_user_message(e)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
 
 @app.post('/collections')
@@ -907,7 +1005,11 @@ def create_collection_group(
         description = payload.get('description')
 
         if not name:
-            raise HTTPException(status_code=400, detail='name is required')
+            info = get_user_message(ValueError('Invalid input'), 'name')
+            raise HTTPException(
+                status_code=status_code_for_category(info['category']),
+                detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+            )
 
         existing = (
             db.query(CollectionGroup)
@@ -915,9 +1017,10 @@ def create_collection_group(
             .first()
         )
         if existing:
+            info = get_user_message(ValueError('Invalid input'), 'collection group')
             raise HTTPException(
-                status_code=400,
-                detail='Collection group already exists',
+                status_code=status_code_for_category(info['category']),
+                detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
             )
 
         group = CollectionGroup(
@@ -939,7 +1042,11 @@ def create_collection_group(
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        info = get_user_message(e)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
 
 @app.delete('/collections/{group_name}')
@@ -956,7 +1063,11 @@ def delete_collection_group(
             .first()
         )
         if not group:
-            raise HTTPException(status_code=404, detail='Collection group not found')
+            info = get_user_message(ValueError('not found'), 'collection group')
+            raise HTTPException(
+                status_code=status_code_for_category(info['category']),
+                detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+            )
 
         # Delete ChromaDB collection for this group.
         try:
@@ -987,7 +1098,11 @@ def delete_collection_group(
         raise
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        info = get_user_message(e)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
 
 @app.delete('/history/{analysis_id}')
@@ -999,7 +1114,11 @@ def delete_history_item(
 
     analysis = db.query(Analysis).filter(Analysis.id == analysis_id).first()
     if not analysis:
-        raise HTTPException(status_code=404, detail='Analysis not found')
+        info = get_user_message(ValueError('not found'), 'analysis')
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
     db.delete(analysis)
     db.commit()
@@ -1017,7 +1136,11 @@ def update_history_notes(
 
     analysis = db.query(Analysis).filter(Analysis.id == analysis_id).first()
     if not analysis:
-        raise HTTPException(status_code=404, detail='Analysis not found')
+        info = get_user_message(ValueError('not found'), 'analysis')
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
     analysis.notes = payload.notes
     db.commit()
@@ -1112,7 +1235,11 @@ def remove_watchlist_item(
 
     item = db.query(WatchlistItem).filter(WatchlistItem.id == item_id).first()
     if not item:
-        raise HTTPException(status_code=404, detail='Watchlist item not found')
+        info = get_user_message(ValueError('not found'), 'watchlist item')
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
 
     item.is_active = False
     db.commit()

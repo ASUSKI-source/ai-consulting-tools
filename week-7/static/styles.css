@@ -292,8 +292,38 @@ input[type="text"]:focus {
     margin-bottom: 20px;
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: flex-start;
+    gap: 12px;
     animation: slideIn 0.3s ease-out;
+}
+
+.error-message-content {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.error-message-icon {
+    font-size: 1.25rem;
+    flex-shrink: 0;
+}
+
+.error-message-body {
+    display: block;
+}
+
+.error-message-text {
+    font-size: 1rem;
+    font-weight: 600;
+    display: block;
+}
+
+.error-message-suggestion {
+    font-size: 0.875rem;
+    font-style: italic;
+    opacity: 0.95;
+    display: block;
+    margin-top: 4px;
 }
 
 .close-btn {
