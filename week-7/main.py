@@ -54,6 +54,7 @@ from rag_pipeline import (
     ask_document,
     ask_across_collections,
     list_collections,
+    _get_collection_or_raise,
     CHROMA_CLIENT,
 )
 
@@ -800,6 +801,66 @@ def get_document_history(
             }
             for qa in qas
         ]
+    except Exception as e:
+        info = get_user_message(e)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
+
+
+@app.get('/documents/{collection_name}/chunks')
+def get_document_chunks(
+    collection_name: str,
+    source_file: Optional[str] = None,
+    limit: int = 20,
+    offset: int = 0,
+):
+    """Return stored chunks for a collection so users can see what content was indexed."""
+
+    try:
+        collection = _get_collection_or_raise(collection_name)
+        where_filter = {'source_file': source_file} if source_file else None
+        results = collection.get(
+            where=where_filter,
+            include=['documents', 'metadatas'],
+        )
+        all_docs = results.get('documents') or []
+        all_metadatas = results.get('metadatas') or []
+        while len(all_metadatas) < len(all_docs):
+            all_metadatas.append({})
+
+        combined = list(zip(all_docs, all_metadatas))
+        combined.sort(key=lambda x: ((x[1].get('source_file') or ''), (x[1].get('chunk_index') or 0)))
+
+        total_chunks = len(combined)
+        paged = combined[offset : offset + limit]
+
+        chunks = []
+        for i, (doc_text, meta) in enumerate(paged):
+            meta = meta or {}
+            word_count = meta.get('word_count')
+            if word_count is None and doc_text:
+                word_count = len((doc_text or '').split())
+            chunks.append({
+                'index': offset + i,
+                'text': doc_text or '',
+                'word_count': word_count,
+                'source_file': meta.get('source_file', ''),
+            })
+
+        return {
+            'collection_name': collection_name,
+            'source_file': source_file or 'all files',
+            'total_chunks': total_chunks,
+            'chunks': chunks,
+        }
+    except ValueError as e:
+        info = get_user_message(e, collection_name)
+        raise HTTPException(
+            status_code=status_code_for_category(info['category']),
+            detail={'user_message': info['user_message'], 'suggestion': info['suggestion'], 'category': info['category'].value},
+        )
     except Exception as e:
         info = get_user_message(e)
         raise HTTPException(

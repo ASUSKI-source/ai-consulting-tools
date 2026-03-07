@@ -521,6 +521,57 @@ def build_rag_context(
     return "\n".join(lines), budget_info, budgeted_results
 
 
+def calculate_confidence(search_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Compute a 0–100 confidence score and label from search result distances.
+
+    Uses average and best distance from the (best-first) search results to
+    produce a score, label, and color for the UI. Empty results return
+    a fixed "No Match" confidence.
+
+    Args:
+        search_results: List of result dicts from search_documents(), each
+            with at least a "distance" key (sorted best-first).
+
+    Returns:
+        Dict with: score (0–100), label (str), color (str),
+        results_count, best_distance, avg_distance.
+    """
+    if not search_results:
+        return {
+            "score": 0,
+            "label": "No Match",
+            "color": "red",
+            "results_count": 0,
+            "best_distance": 0.0,
+            "avg_distance": 0.0,
+        }
+
+    avg_distance = sum(r["distance"] for r in search_results) / len(search_results)
+    best_distance = search_results[0]["distance"]
+
+    # Convert to 0-100 score
+    score = max(0, min(100, round((1 - avg_distance / 2) * 100)))
+
+    # Label based on score
+    if score >= 75:
+        label, color = "High Confidence", "green"
+    elif score >= 50:
+        label, color = "Moderate Confidence", "yellow"
+    elif score >= 25:
+        label, color = "Low Confidence", "orange"
+    else:
+        label, color = "Very Low — Answer May Be Unreliable", "red"
+
+    return {
+        "score": score,
+        "label": label,
+        "color": color,
+        "results_count": len(search_results),
+        "best_distance": round(best_distance, 3),
+        "avg_distance": round(avg_distance, 3),
+    }
+
+
 def _estimate_claude_cost(input_tokens: int, output_tokens: int) -> float:
     """Estimate the cost in USD for a Claude API call.
 
@@ -579,13 +630,16 @@ def ask_document(
     # No chunks passed the distance threshold: don't call Claude.
     # Return a fixed message so the UI can show "low confidence" or similar.
     if not search_results:
+        confidence = calculate_confidence(search_results)
         return {
             "answer": (
                 "I could not find relevant information in the document "
                 "to answer this question."
             ),
             "sources": [],
+            "sources_text": [],
             "found_relevant_context": False,
+            "confidence": confidence,
             "input_tokens": 0,
             "output_tokens": 0,
             "estimated_cost": 0.0,
@@ -638,6 +692,8 @@ def ask_document(
 
     # Return the budgeted source dicts (what we actually sent as context).
     sources = budgeted_results
+    sources_text = [r.get("text", "") for r in budgeted_results]
+    confidence = calculate_confidence(search_results)
 
     # One-line summary for development and debugging.
     est_tokens = budget_info.get("estimated_tokens", 0) if budget_info else 0
@@ -659,7 +715,9 @@ def ask_document(
     return {
         "answer": answer_text,
         "sources": sources,
+        "sources_text": sources_text,
         "found_relevant_context": True,
+        "confidence": confidence,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "estimated_cost": estimated_cost,

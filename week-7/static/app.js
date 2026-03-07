@@ -474,8 +474,13 @@ function renderDocumentCard(doc) {
                 </div>
             </div>
             <div class="document-actions">
+                <button type="button" class="btn-secondary doc-preview-chunks-btn">Preview Chunks</button>
                 <button class="btn-secondary doc-ask-btn">Ask Questions</button>
                 <button class="btn-secondary doc-delete-btn danger">Delete</button>
+            </div>
+            <div class="doc-chunk-preview" style="display: none;" data-offset="0">
+                <div class="doc-chunk-preview-list"></div>
+                <button type="button" class="btn-secondary small doc-chunk-preview-more" style="display: none;">Show More</button>
             </div>
         </div>
     `;
@@ -1025,6 +1030,43 @@ async function loadDocumentHistory(collectionName) {
         showError('Connection failed. Is the server running?');
     }
 }
+/** Confidence bar fill colors by API color string. */
+const CONFIDENCE_COLORS = {
+    green: '#22C55E',
+    yellow: '#EAB308',
+    orange: '#F97316',
+    red: '#EF4444',
+};
+
+/** Hint text per confidence color. */
+const CONFIDENCE_HINTS = {
+    green: 'Strong match — the answer is well-supported by the document.',
+    yellow: 'Moderate match — verify the answer against the source passages.',
+    orange: 'Weak match — the document may not contain a clear answer.',
+    red: 'Very weak match — treat this answer with caution.',
+};
+
+/**
+ * Updates the confidence bar above the answer (Document Q&A).
+ * @param {{ score: number, label: string, color: string }} confidence
+ */
+function updateConfidence(confidence) {
+    const container = document.getElementById('confidence-container');
+    const labelEl = document.getElementById('confidence-label-text');
+    const scoreEl = document.getElementById('confidence-score-text');
+    const fillEl = document.getElementById('confidence-bar-fill');
+    const hintEl = document.getElementById('confidence-hint');
+    if (!container || !labelEl || !scoreEl || !fillEl || !hintEl) return;
+
+    container.style.display = 'block';
+    labelEl.textContent = confidence.label || 'Confidence';
+    scoreEl.textContent = (confidence.score != null ? confidence.score : 0) + '/100';
+    fillEl.style.width = (confidence.score != null ? Math.max(0, Math.min(100, confidence.score)) : 0) + '%';
+    const colorKey = (confidence.color || 'red').toLowerCase();
+    fillEl.style.backgroundColor = CONFIDENCE_COLORS[colorKey] || CONFIDENCE_COLORS.red;
+    hintEl.textContent = CONFIDENCE_HINTS[colorKey] || CONFIDENCE_HINTS.red;
+}
+
 function renderSourceAttributions(sources) {
     const container = document.getElementById('doc-source-attributions');
     if (!container) return;
@@ -1064,6 +1106,8 @@ async function askQuestion() {
     const attributionsEl = document.getElementById('doc-source-attributions');
     if (answerEl) answerEl.textContent = '';
     if (attributionsEl) attributionsEl.innerHTML = '';
+    const confidenceContainer = document.getElementById('confidence-container');
+    if (confidenceContainer) confidenceContainer.style.display = 'none';
     showLoadingPhases();
     try {
         let resp;
@@ -1101,7 +1145,14 @@ async function askQuestion() {
         if (answerEl) {
             answerEl.textContent = data.answer || 'No answer returned.';
         }
+        if (data.confidence) {
+            updateConfidence(data.confidence);
+        } else {
+            const container = document.getElementById('confidence-container');
+            if (container) container.style.display = 'none';
+        }
         const sources = Array.isArray(data.sources) ? data.sources : [];
+        const sourcesText = Array.isArray(data.sources_text) ? data.sources_text : [];
         renderSourceAttributions(sources);
         if (costEl) {
             const cost = Number(data.estimated_cost || 0);
@@ -1117,31 +1168,28 @@ async function askQuestion() {
             confEl.className =
                 'confidence-badge ' + (ok ? 'confidence-high' : 'confidence-low');
         }
+        const sourcesDetails = document.getElementById('doc-sources-details');
         if (sourcesList) {
-            if (sources.length === 0) {
+            if (sources.length === 0 && sourcesText.length === 0) {
                 sourcesList.innerHTML = '<div class="history-empty">No source passages returned.</div>';
+                if (sourcesDetails) sourcesDetails.removeAttribute('open');
             } else {
-                sourcesList.innerHTML = sources
-                    .map((src, idx) => {
-                        const text = typeof src === 'string' ? src : (src && src.text || '');
-                        const fname = (typeof src === 'object' && src && src.source_file) || '';
-                        const label = fname ? `Passage ${idx + 1} (from ${escapeHtml(fname)})` : `Passage ${idx + 1}`;
-                        return `
-                            <div class="doc-source">
-                                <div class="doc-source-label">${label}</div>
-                                <div class="doc-source-text">${escapeHtml(text)}</div>
-                            </div>
-                        `;
-                    })
-                    .join('');
+                const listHtml = (sourcesText.length ? sourcesText : sources.map(s => (s && s.text) || '')).map((text, idx) => {
+                    const src = sources[idx] || {};
+                    const fname = (src.source_file || '').toString();
+                    const distance = src.distance != null ? Number(src.distance).toFixed(3) : '—';
+                    const preview = (text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+                    const label = fname ? `Passage ${idx + 1} · ${escapeHtml(fname)} · distance ${distance}` : `Passage ${idx + 1} · distance ${distance}`;
+                    return `
+                        <div class="doc-source">
+                            <div class="doc-source-label">${label}</div>
+                            <blockquote class="doc-source-blockquote">${escapeHtml(preview)}${(text || '').length > 200 ? '…' : ''}</blockquote>
+                        </div>
+                    `;
+                }).join('');
+                sourcesList.innerHTML = listHtml;
+                if (sourcesDetails) sourcesDetails.removeAttribute('open');
             }
-        }
-        if (sourcesContainer) {
-            sourcesContainer.style.display = 'none';
-        }
-        const toggleBtn = document.getElementById('doc-sources-toggle');
-        if (toggleBtn) {
-            toggleBtn.textContent = 'Show sources';
         }
         if (scope !== 'all' && currentDocument.collectionName) {
             loadDocumentHistory(currentDocument.collectionName);
@@ -1152,6 +1200,60 @@ async function askQuestion() {
         showError('Connection failed. Is the server running?');
     }
 }
+const CHUNK_PREVIEW_PAGE_SIZE = 5;
+
+/**
+ * Load chunks for a document and display in the card's preview panel.
+ * @param {string} collectionName
+ * @param {string} filename
+ * @param {HTMLElement} cardEl - .document-card
+ * @param {number} offset - pagination offset
+ * @param {boolean} append - if true, append to list; else replace
+ */
+async function loadChunkPreview(collectionName, filename, cardEl, offset, append) {
+    const panel = cardEl.querySelector('.doc-chunk-preview');
+    const listEl = cardEl.querySelector('.doc-chunk-preview-list');
+    const moreBtn = cardEl.querySelector('.doc-chunk-preview-more');
+    if (!panel || !listEl) return;
+
+    try {
+        const url = `${API_BASE}/documents/${encodeURIComponent(collectionName)}/chunks?source_file=${encodeURIComponent(filename)}&limit=${CHUNK_PREVIEW_PAGE_SIZE}&offset=${offset}`;
+        const resp = await fetch(url);
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+            showError(data.detail || data.user_message || 'An error occurred.');
+            return;
+        }
+        const chunks = data.chunks || [];
+        const totalChunks = data.total_chunks || 0;
+        const nextOffset = offset + chunks.length;
+
+        if (!append) {
+            listEl.innerHTML = '';
+        }
+        chunks.forEach((chunk) => {
+            const preview = (chunk.text || '').replace(/\s+/g, ' ').trim().slice(0, 150);
+            const wc = chunk.word_count != null ? chunk.word_count : (chunk.text || '').split(/\s+/).length;
+            const item = document.createElement('div');
+            item.className = 'doc-chunk-preview-item';
+            item.innerHTML = `
+                <div class="doc-chunk-preview-meta">Chunk ${chunk.index + 1} · ${wc} words · ${escapeHtml(chunk.source_file || '')}</div>
+                <div class="doc-chunk-preview-text">${escapeHtml(preview)}${(chunk.text || '').length > 150 ? '…' : ''}</div>
+            `;
+            listEl.appendChild(item);
+        });
+
+        panel.dataset.offset = String(nextOffset);
+        panel.style.display = 'block';
+        if (moreBtn) {
+            moreBtn.style.display = nextOffset < totalChunks ? 'block' : 'none';
+        }
+    } catch (err) {
+        console.error('Error in loadChunkPreview:', err);
+        showError('Connection failed. Is the server running?');
+    }
+}
+
 async function deleteDocument(collectionName) {
     if (!collectionName) return;
     const confirmed = window.confirm('Delete this document and its collection?');
@@ -1483,6 +1585,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 selectDocument(collectionName, filename);
             } else if (e.target.classList.contains('doc-delete-btn')) {
                 deleteDocument(collectionName);
+            } else if (e.target.classList.contains('doc-preview-chunks-btn')) {
+                const panel = card.querySelector('.doc-chunk-preview');
+                if (panel && panel.style.display === 'none') {
+                    loadChunkPreview(collectionName, filename, card, 0, false);
+                } else if (panel) {
+                    panel.style.display = 'none';
+                }
+            } else if (e.target.classList.contains('doc-chunk-preview-more')) {
+                const panel = card.querySelector('.doc-chunk-preview');
+                const offset = parseInt(panel.dataset.offset || '0', 10);
+                loadChunkPreview(collectionName, filename, card, offset, true);
             }
         });
     }
@@ -1499,17 +1612,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (askBtn) {
         askBtn.addEventListener('click', askQuestion);
     }
-    const sourcesToggle = document.getElementById('doc-sources-toggle');
-    if (sourcesToggle) {
-        sourcesToggle.addEventListener('click', () => {
-            const container = document.getElementById('doc-sources-container');
-            if (!container) return;
-            const isHidden = container.style.display === 'none' || container.style.display === '';
-            container.style.display = isHidden ? 'block' : 'none';
-            sourcesToggle.textContent = isHidden ? 'Hide sources' : 'Show sources';
-        });
-    }
-
     // Auto-load stats, history and watchlist on page load so data is visible immediately.
     loadStats();
     loadHistory(true);

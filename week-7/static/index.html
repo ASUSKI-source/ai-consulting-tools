@@ -233,17 +233,24 @@
             </div>
             <div class="doc-answer-section">
                 <h4>Answer</h4>
+                <div id="confidence-container" style="display: none;">
+                    <div class="confidence-label">
+                        <span id="confidence-label-text">High Confidence</span>
+                        <span id="confidence-score-text">85/100</span>
+                    </div>
+                    <div class="confidence-bar-bg">
+                        <div id="confidence-bar-fill" class="confidence-bar-fill"></div>
+                    </div>
+                    <p id="confidence-hint" class="confidence-hint"></p>
+                </div>
                 <div id="doc-answer-text" class="doc-answer-box"></div>
                 <div id="doc-source-attributions" class="doc-source-attributions"></div>
+                <details id="doc-sources-details" class="doc-sources-details">
+                    <summary class="doc-sources-summary">Sources used</summary>
+                    <div id="doc-sources-list" class="doc-sources-list"></div>
+                </details>
                 <div class="doc-meta-row">
-                    <button id="doc-sources-toggle" class="btn-secondary small">
-                        Show sources
-                    </button>
                     <span id="doc-cost" class="doc-cost"></span>
-                </div>
-                <div id="doc-sources-container" class="doc-sources-container" style="display: none;">
-                    <h5>Sources used:</h5>
-                    <div id="doc-sources-list"></div>
                 </div>
                 <div id="doc-history-list" class="doc-history-list">
                     <!-- Previous Q&A for this document will be shown here -->

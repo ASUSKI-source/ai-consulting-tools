@@ -8,7 +8,7 @@ I'm a full-stack developer building production-ready AI applications for real bu
 | Project | Description | Live URL | Tech Stack |
 |--------|-------------|----------|------------|
 | AI Financial Market Analyzer | Live stock and crypto analysis with technical indicators, AI summaries, comparison mode, and saved history. | [Railway URL] | FastAPI, Claude AI, yfinance, CoinGecko, PostgreSQL, ChromaDB |
-| Document Q&A System | Upload documents, ask questions in natural language, get answers grounded in your files with cited sources. | Coming soon | RAG, ChromaDB, FastAPI, Claude AI |
+| Document Q&A System | Upload documents into collection groups, ask questions (single doc, whole collection, or all docs), get answers with source attribution and confidence. | [Railway URL] | RAG, ChromaDB, Voyage AI, FastAPI, Claude AI, PostgreSQL |
 
 ## Projects
 
@@ -31,16 +31,18 @@ A full-stack web app that fetches real-time stock (yfinance) and crypto (CoinGec
 
 ### 2. Document Q&A System (RAG)
 
-A retrieval-augmented generation (RAG) pipeline that lets users upload PDF or text files, chunk and embed them with sentence-transformers, store vectors in ChromaDB, and ask questions in natural language. Claude answers using only retrieved passages, with source attribution and a confidence indicator when context is weak.
+A production RAG pipeline that lets users upload PDF or text files into **named collection groups**, chunk them with sentence-aware logic (no mid-sentence cuts), embed with Voyage AI, and store vectors in ChromaDB. Users ask questions in natural language with three search scopes: this document only, whole collection, or all documents. Claude answers using only retrieved passages, with source attribution (clickable doc + collection links), token budgeting, keyword re-ranking, and confidence scoring.
 
 **Key technical features:**
-- Semantic search with ChromaDB and sentence-transformers (all-MiniLM-L6-v2)
-- Overlapping text chunking (configurable size/overlap) for PDF and .txt
-- Source attribution: answers cite which passages were used; sources are expandable in the UI
-- PDF + text support via PyPDF2 and a unified chunker
-- Confidence scoring and cost display per query; Q&A history persisted in PostgreSQL
+- **Multi-document collection management:** create collections, upload to a chosen collection, filter document list by collection
+- **Cross-document semantic search:** query a single document, a whole collection, or all documents via `/documents/ask` and `/documents/ask-all`
+- Semantic search with ChromaDB and Voyage AI (voyage-2) embeddings
+- Sentence-aware chunking (smart_chunker) with configurable overlap; zero mid-sentence cuts
+- Token budgeting and logging; keyword-overlap re-ranking for domain-specific queries
+- Source attribution: answers list sources as “filename (Collection)”; each source is a clickable link to that document
+- PDF + text support via PyPDF2; Q&A history and collection metadata in PostgreSQL
 
-**Code:** [week-5](week-5/)
+**Code:** [week-5](week-5/) · [week-6](week-6/) (production)
 
 ## Technical Skills Demonstrated
 
