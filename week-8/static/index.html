@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Market Analyzer</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+
+    <header class="app-header">
+        <h1 id="app-title">AI Market Analyzer</h1>
+        <p id="app-subtitle">Powered by Claude AI + Live Market Data</p>
+        <div id='user-bar' style='display:none'>
+            <span id='user-greeting'>Hello, Drew</span>
+            <button id='logout-btn' class='btn-secondary-small'>Sign Out</button>
+        </div>
+        <!-- Subtle stats bar showing aggregate usage information -->
+        <p id="stats-bar" class="stats-bar"></p>
+    </header>
+
+    <main class="container">
+        
+        <section class="search-section">
+            <div class="tabs">
+                <button class="tab-btn active" id="tab-stocks">Stocks</button>
+                <button class="tab-btn" id="tab-crypto">Crypto</button>
+            </div>
+
+            <div id="stock-search" class="search-container">
+                <input type="text" id="stock-ticker" placeholder="Enter ticker: AAPL, TSLA, NVDA...">
+                <button id="analyze-stock-btn" class="btn-primary">Analyze</button>
+            </div>
+
+            <div id="crypto-search" class="search-container" style="display: none;">
+                <input type="text" id="crypto-id" placeholder="Enter coin ID: bitcoin, ethereum...">
+                <button id="analyze-crypto-btn" class="btn-primary">Analyze</button>
+                <p class="input-note">Use CoinGecko IDs (e.g. bitcoin not BTC)</p>
+            </div>
+        </section>
+
+        <section class="compare-section">
+            <details id="compare-toggle">
+                <summary class="btn-secondary">Compare Two Assets</summary>
+                <div class="compare-inputs">
+                    <div class="asset-group">
+                        <input type="text" id="asset1-input" placeholder="Asset 1">
+                        <select id="asset1-type">
+                            <option value="stock">Stock</option>
+                            <option value="crypto">Crypto</option>
+                        </select>
+                    </div>
+                    <div class="asset-group">
+                        <input type="text" id="asset2-input" placeholder="Asset 2">
+                        <select id="asset2-type">
+                            <option value="stock">Stock</option>
+                            <option value="crypto">Crypto</option>
+                        </select>
+                    </div>
+                    <button id="compare-btn" class="btn-primary">Compare</button>
+                </div>
+            </details>
+        </section>
+
+        <div id="loading" style="display: none;">
+            <div class="spinner"></div>
+            <p id="loading-text">Fetching data and generating analysis...</p>
+        </div>
+
+        <div id="error-message" class="error-box" role="alert" aria-live="polite" style="display: none;">
+            <!-- Content injected by showError(): icon + user_message (line 1) + suggestion (line 2, smaller italic). -->
+        </div>
+
+        <section id="results" class="results-section" style="display: none;">
+            <div class="results-header">
+                <h2 id="display-name">Asset Name</h2>
+                <span id="display-symbol" class="badge">SYMBOL</span>
+            </div>
+
+            <div class="price-container">
+                <span class="label">Current Price:</span>
+                <span id="current-price" class="price-value">$0.00</span>
+            </div>
+
+            <div class="market-stats">
+                <div id="stock-only-stats" class="stats-grid">
+                    <div class="stat-item">PE Ratio: <span id="pe-ratio">-</span></div>
+                    <div class="stat-item">52-Week Range: <span id="year-range">-</span></div>
+                </div>
+                <div id="crypto-only-stats" class="stats-grid">
+                    <div class="stat-item">24h: <span id="change-24h">-</span></div>
+                    <div class="stat-item">7d: <span id="change-7d">-</span></div>
+                    <div class="stat-item">30d: <span id="change-30d">-</span></div>
+                </div>
+            </div>
+
+            <div class="technicals-section">
+                <h3>Technical Indicators</h3>
+                <div class="indicator-grid">
+                    <div class="indicator">RSI: <span id="rsi-val">-</span></div>
+                    <div class="indicator">SMA5: <span id="sma5-val">-</span></div>
+                    <div class="indicator">SMA20: <span id="sma20-val">-</span></div>
+                </div>
+            </div>
+
+            <div class="advanced-metrics-section">
+                <h3>Market Depth & Velocity</h3>
+                <div class="indicator-grid">
+                    <div class="indicator">Slap Freq: <span id="slap-freq-val">-</span></div>
+                    <div class="indicator">Funding Rate: <span id="funding-rate-val">-</span></div>
+                    <div class="indicator">Short-to-Reserve: <span id="str-ratio-val">-</span></div>
+                </div>
+            </div>
+
+            <div class="ai-analysis-container">
+                <h3>AI Technical Assessment</h3>
+                <div id="ai-response-text" class="response-area">
+                    </div>
+            </div>
+
+            <div class="results-footer">
+                <p id="analysis-cost">This analysis cost: $0.0000</p>
+                <p id="liquidity-gap-footer" class="footer-note">Liquidity Gap: <span id="liq-gap-dist">-</span></p>
+            </div>
+        </section>
+
+        <!-- HISTORY PANEL: collapsible section for saved analyses -->
+        <section id="history-panel" class="history-panel">
+            <button id="history-toggle-btn" class="btn-secondary history-toggle-btn">
+                Analysis History
+            </button>
+            <div id="history-content" class="history-content" style="display: none;">
+                <div class="history-controls">
+                    <!-- Text input for filtering history by ticker symbol -->
+                    <input
+                        type="text"
+                        id="history-search-input"
+                        class="history-search-input"
+                        placeholder="Filter by ticker..."
+                    >
+
+                    <!-- Type filter buttons for All / Stocks / Crypto -->
+                    <div class="history-type-filters">
+                        <button id="history-filter-all" class="history-filter-btn active">All</button>
+                        <button id="history-filter-stocks" class="history-filter-btn">Stocks</button>
+                        <button id="history-filter-crypto" class="history-filter-btn">Crypto</button>
+                    </div>
+
+                    <!-- Manual refresh button to re-query the server -->
+                    <button id="history-refresh-btn" class="btn-secondary history-refresh-btn">
+                        Refresh History
+                    </button>
+                </div>
+
+                <!-- Scrollable list container for individual history rows -->
+                <div id="history-list" class="history-list">
+                    <!-- History items will be injected here dynamically -->
+                </div>
+
+                <!-- Load more button for pagination (hidden until needed) -->
+                <button
+                    id="history-load-more"
+                    class="btn-secondary history-load-more-btn"
+                    style="display: none;"
+                >
+                    Load More
+                </button>
+            </div>
+        </section>
+
+        <!-- WATCHLIST PANEL: shows current watchlist items and controls -->
+        <section id="watchlist-panel" class="watchlist-panel">
+            <div class="watchlist-header">
+                <h3>Watchlist</h3>
+                <button id="add-to-watchlist-btn" class="btn-secondary add-watchlist-btn">
+                    Add to Watchlist
+                </button>
+            </div>
+            <!-- Dynamic chips/tags for each watchlist item -->
+            <div id="watchlist-chips" class="watchlist-chips">
+                <!-- Chips will be rendered here dynamically -->
+            </div>
+        </section>
+        <!-- DOCUMENT Q&A SECTION -->
+        <section id="documents-panel" class="documents-panel">
+            <h3>Document Q&A</h3>
+            <!-- Collection tabs: All Collections, then one per collection, then + -->
+            <div class="doc-collection-tabs tabs">
+                <button type="button" class="tab-btn doc-collection-tab active" data-collection="">All Collections</button>
+                <div id="doc-collection-tabs-list"></div>
+                <button type="button" id="doc-collection-add-btn" class="tab-btn doc-collection-add" title="Create new collection">+</button>
+            </div>
+            <!-- Create collection form (hidden by default) -->
+            <div id="doc-create-collection-form" class="doc-create-collection-form" style="display: none;">
+                <input type="text" id="doc-new-collection-name" placeholder="Collection name" maxlength="100">
+                <input type="text" id="doc-new-collection-desc" placeholder="Description (optional)">
+                <button type="button" id="doc-create-collection-submit" class="btn-primary small">Create</button>
+                <button type="button" id="doc-create-collection-cancel" class="btn-secondary small">Cancel</button>
+            </div>
+            <div class="doc-upload-row">
+                <label for="doc-upload-collection">Upload to:</label>
+                <select id="doc-upload-collection">
+                    <option value="default">default</option>
+                </select>
+            </div>
+            <div id="doc-upload-dropzone" class="doc-dropzone">
+                <p>Drop a .txt or .pdf file here, or click to browse</p>
+                <input type="file" id="doc-file-input" accept=".txt,.pdf" style="display: none;">
+            </div>
+            <p id="doc-upload-status" class="small-muted" style="display: none;"></p>
+            <div id="documents-list" class="documents-list">
+                <!-- Document cards will be injected here -->
+            </div>
+        </section>
+        <!-- DOCUMENT Q&A PANEL -->
+        <section id="doc-qa-panel" class="doc-qa-panel" style="display: none;">
+            <div class="doc-qa-header">
+                <h3>Questions for: <span id="doc-active-name"></span></h3>
+                <span id="doc-confidence-badge" class="confidence-badge"></span>
+            </div>
+            <div class="doc-search-scope-row">
+                <span class="doc-search-scope-label">Search:</span>
+                <div class="doc-search-scope-options">
+                    <label><input type="radio" name="doc-search-scope" value="document" checked> This document only</label>
+                    <label><input type="radio" name="doc-search-scope" value="collection"> Whole collection</label>
+                    <label><input type="radio" name="doc-search-scope" value="all"> All documents</label>
+                </div>
+            </div>
+            <div class="doc-question-row">
+                <input
+                    type="text"
+                    id="doc-question-input"
+                    placeholder="Ask a question about this document..."
+                >
+                <button id="doc-ask-btn" class="btn-primary">Ask</button>
+            </div>
+            <div class="doc-answer-section">
+                <h4>Answer</h4>
+                <div id="confidence-container" style="display: none;">
+                    <div class="confidence-label">
+                        <span id="confidence-label-text">High Confidence</span>
+                        <span id="confidence-score-text">85/100</span>
+                    </div>
+                    <div class="confidence-bar-bg">
+                        <div id="confidence-bar-fill" class="confidence-bar-fill"></div>
+                    </div>
+                    <p id="confidence-hint" class="confidence-hint"></p>
+                </div>
+                <div id="doc-answer-text" class="doc-answer-box"></div>
+                <div id="doc-source-attributions" class="doc-source-attributions"></div>
+                <details id="doc-sources-details" class="doc-sources-details">
+                    <summary class="doc-sources-summary">Sources used</summary>
+                    <div id="doc-sources-list" class="doc-sources-list"></div>
+                </details>
+                <div class="doc-meta-row">
+                    <span id="doc-cost" class="doc-cost"></span>
+                </div>
+                <div id="doc-history-list" class="doc-history-list">
+                    <!-- Previous Q&A for this document will be shown here -->
+                </div>
+            </div>
+        </section>
+
+    </main>
+    <script src="/static/app.js"></script>
+</body>
+</html>
