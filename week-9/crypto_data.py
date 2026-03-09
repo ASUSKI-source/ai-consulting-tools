@@ -54,6 +54,8 @@ COIN_MAP = {
     "bch": "bitcoin-cash",
     "bitcoin-cash": "bitcoin-cash",
     "link": "chainlink",
+    "link-usd": "chainlink",
+    "linkusd": "chainlink",
     "chainlink": "chainlink",
     "ltc": "litecoin",
     "litecoin": "litecoin",
@@ -94,11 +96,14 @@ def resolve_coin_id(user_input: str) -> str:
     to the raw input string if no mapping is found. If the key ends with
     '-usd' (e.g. link-usd), also try the symbol without that suffix.
     """
-    key = (user_input or "").strip().lower()
+    raw = user_input if user_input is not None else ""
+    key = str(raw).strip().lower()
     if key in COIN_MAP:
         return COIN_MAP[key]
-    if key.endswith("-usd") and key[:-4] in COIN_MAP:
-        return COIN_MAP[key[:-4]]
+    if key.endswith("-usd"):
+        symbol = key[:-4].strip()
+        if symbol in COIN_MAP:
+            return COIN_MAP[symbol]
     return user_input
 
 
