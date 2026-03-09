@@ -91,10 +91,15 @@ def resolve_coin_id(user_input: str) -> str:
     """Normalize a user-supplied crypto ticker/name into a CoinGecko coin ID.
 
     Lowercase and strip the input, look it up in COIN_MAP, and fall back
-    to the raw input string if no mapping is found.
+    to the raw input string if no mapping is found. If the key ends with
+    '-usd' (e.g. link-usd), also try the symbol without that suffix.
     """
     key = (user_input or "").strip().lower()
-    return COIN_MAP.get(key, user_input)
+    if key in COIN_MAP:
+        return COIN_MAP[key]
+    if key.endswith("-usd") and key[:-4] in COIN_MAP:
+        return COIN_MAP[key[:-4]]
+    return user_input
 
 
 def get_crypto_data(coin_id: str) -> dict:
