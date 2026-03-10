@@ -1,6 +1,8 @@
 import anthropic
 import os
-from typing import List, Dict, Any, Optional
+import json
+import time
+from typing import List, Dict, Any, Optional, Generator
 
 from tools import TOOLS, execute_tool
 
@@ -234,3 +236,126 @@ def run_agent(
         ],
     }
 
+
+def run_agent_stream(
+    user_message: str,
+    conversation_history: list = None,
+    collection_name: str = "default",
+) -> Generator[str, None, None]:
+    """Streaming version of run_agent.
+
+    Yields SSE-formatted strings. Tool calls are executed synchronously and
+    only the final text answer from Claude is streamed back to the caller.
+    """
+
+    # Start from any prior conversation history (if provided) so the model can
+    # maintain context across turns, then append the latest user message as the
+    # next step in the dialogue.
+    messages = list(conversation_history or [])
+    messages.append({"role": "user", "content": user_message})
+
+    # Track which tools were invoked (and with what inputs) as well as loop
+    # iterations and approximate token usage for monitoring / debugging.
+    tools_used = []
+    iterations = 0
+    total_tokens = 0
+
+    # TOOL CALL PHASE:
+    # Repeatedly call Claude in non-streaming mode so it can decide whether to
+    # issue tool_use requests. For each requested tool, we synchronously execute
+    # the corresponding Python implementation and stream structured SSE events
+    # describing both the call and its result.
+    while iterations < MAX_ITERATIONS:
+        iterations += 1
+
+        # Make a standard (non-streaming) Messages API call so Claude can plan
+        # tool usage. This mirrors the behavior of run_agent, but instead of
+        # returning a final answer directly we watch for tool_use and end_turn
+        # stop reasons to drive the streaming protocol.
+        response = ANTHROPIC_CLIENT.messages.create(
+            model=MODEL,
+            max_tokens=2048,
+            system=SYSTEM_PROMPT,
+            tools=TOOLS,
+            messages=messages,
+        )
+        total_tokens += response.usage.input_tokens + response.usage.output_tokens
+        messages.append({"role": "assistant", "content": response.content})
+
+        # If Claude requests tools, execute each one, emitting SSE events before
+        # and after the call so the client can observe the agent's reasoning
+        # process and intermediate tool outputs.
+        if response.stop_reason == "tool_use":
+            tool_results = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    tools_used.append({"tool": block.name, "input": block.input})
+                    # Yield a tool_call event before executing the tool so the
+                    # client can, for example, show a "calling tool" indicator.
+                    yield f"data: {json.dumps({'type': 'tool_call', 'tool': block.name, 'input': block.input})}\n\n"
+
+                    start_time = time.time()
+                    result = execute_tool(block.name, block.input)
+                    duration_ms = int((time.time() - start_time) * 1000)
+
+                    # Yield a tool_result event containing a short preview of
+                    # the tool output to keep SSE payloads compact, along with
+                    # the measured execution time in milliseconds.
+                    yield f"data: {json.dumps({'type': 'tool_result', 'tool': block.name, 'preview': str(result)[:100], 'duration_ms': duration_ms})}\n\n"
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result,
+                        }
+                    )
+
+            # Feed all tool_result blocks back to Claude as if they were a user
+            # message so it can read the outputs and decide what to do next.
+            messages.append({"role": "user", "content": tool_results})
+
+        # When Claude signals end_turn, it is ready to produce a final natural
+        # language answer. At this point we reissue the request using the
+        # streaming API and forward text deltas as SSE events to the caller.
+        elif response.stop_reason == "end_turn":
+            # Prepare a fresh messages list for streaming by copying the full
+            # history and removing the most recent assistant message (the
+            # non-streamed response we just received).
+            stream_messages = messages.copy()
+            stream_messages.pop()
+            messages.pop()
+
+            # Stream the final answer from Claude, yielding a text_delta event
+            # for each chunk so that the frontend can render the response
+            # incrementally as it arrives.
+            with ANTHROPIC_CLIENT.messages.stream(
+                model=MODEL,
+                max_tokens=2048,
+                system=SYSTEM_PROMPT,
+                messages=stream_messages,
+            ) as stream:
+                full_text = ""
+                for text_chunk in stream.text_stream:
+                    full_text += text_chunk
+                    yield f"data: {json.dumps({'type': 'text_delta', 'text': text_chunk})}\n\n"
+
+                # After streaming completes, append the fully assembled message
+                # to the conversation history so it can be reused on later turns.
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": full_text}],
+                    }
+                )
+
+            # Finally, emit a terminal done event with metadata about the run,
+            # including the tools used, aggregate token usage, and the updated
+            # conversation history for the next turn.
+            yield f"data: {json.dumps({'type': 'done', 'tools_used': tools_used, 'total_tokens': total_tokens, 'conversation_history': messages})}\n\n"
+            return
+
+        # Any other stop_reason is unexpected in this loop; surface an error
+        # payload to the client and terminate the generator.
+        else:
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Unexpected stop reason'})}\n\n"
+            return

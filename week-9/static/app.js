@@ -56,6 +56,7 @@ let loadingInterval = null;
 
 // --- Financial Research Agent Chat State ---
 const conversationHistory = [];
+const activeActivityItems = {};
 
 /**
  * Starts the phased loading experience.
@@ -1735,66 +1736,12 @@ async function sendMessage() {
     messagesEl.appendChild(userBubble);
     messagesEl.scrollTop = messagesEl.scrollHeight;
 
+    // Disable send button and show initial status while streaming.
     statusEl.textContent = 'Agent is researching...';
     sendBtn.disabled = true;
 
-    try {
-        const resp = await fetch(`${API_BASE}/agent/chat`, {
-            method: 'POST',
-            headers: authHeaders(),
-            body: JSON.stringify({
-                message: userText,
-                conversation_history: conversationHistory,
-                collection_name: 'default'
-            })
-        });
-        const data = await resp.json().catch(() => ({}));
-
-        if (!resp.ok) {
-            const msg =
-                data.detail ||
-                data.user_message ||
-                data.message ||
-                'Agent request failed.';
-            statusEl.textContent = msg;
-            return;
-        }
-
-        // Append agent answer bubble
-        const agentBubble = document.createElement('div');
-        agentBubble.className = 'chat-message message-agent';
-        agentBubble.textContent = data.answer || 'No answer returned.';
-
-        // Tools badge, when tools were used
-        if (Array.isArray(data.tools_used) && data.tools_used.length > 0) {
-            const toolNames = data.tools_used
-                .map((t) => t.tool || t.name)
-                .filter(Boolean);
-            if (toolNames.length > 0) {
-                const badge = document.createElement('div');
-                badge.className = 'tools-badge';
-                badge.textContent = `Tools used: ${toolNames.join(', ')}`;
-                agentBubble.appendChild(document.createElement('br'));
-                agentBubble.appendChild(badge);
-            }
-        }
-
-        messagesEl.appendChild(agentBubble);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
-
-        // Replace conversation history with full updated history from backend.
-        if (Array.isArray(data.conversation_history)) {
-            conversationHistory.length = 0;
-            conversationHistory.push(...data.conversation_history);
-        }
-
-        statusEl.textContent = '';
-    } catch (err) {
-        console.error('Error in sendMessage:', err);
-        statusEl.textContent = 'Agent request failed. Please try again.';
-    } finally {
-        sendBtn.disabled = false;
-    }
+    // Use the streaming endpoint for the agent reply.
+    sendMessageStreaming(userText);
 }
 
 /**
@@ -1810,4 +1757,261 @@ function clearConversation() {
         statusEl.textContent = '';
     }
     conversationHistory.length = 0;
+}
+
+/**
+ * Clears all items from the agent activity feed panel.
+ */
+function clearActivityFeed() {
+    const feed = document.getElementById('activity-feed');
+    if (feed) {
+        feed.innerHTML = '';
+    }
+    // Reset any stored references to active activity items.
+    Object.keys(activeActivityItems).forEach((key) => {
+        delete activeActivityItems[key];
+    });
+}
+
+/**
+ * Adds a new activity item row to the agent activity feed and scrolls to bottom.
+ * @param {string} toolName
+ * @param {'pending'|'complete'} status
+ * @param {string} detail
+ * @returns {HTMLElement|null}
+ */
+function addActivityItem(toolName, status, detail = '') {
+    const feed = document.getElementById('activity-feed');
+    if (!feed) return null;
+
+    const container = document.createElement('div');
+    container.className = `activity-item ${status === 'complete' ? 'complete' : 'pending'}`;
+    container.dataset.toolName = toolName;
+    container.dataset.detail = detail || '';
+
+    const iconSpan = document.createElement('span');
+    iconSpan.className = 'activity-item-icon';
+
+    const labelWrap = document.createElement('div');
+    labelWrap.className = 'activity-item-main';
+
+    const labelSpan = document.createElement('div');
+    labelSpan.className = 'activity-item-label';
+    labelSpan.textContent = toolName;
+
+    const detailSpan = document.createElement('div');
+    detailSpan.className = 'activity-item-detail';
+    detailSpan.textContent = detail || '';
+
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'activity-item-timestamp';
+    const now = new Date();
+    timeSpan.textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    // Choose icon based on tool name / status
+    let icon = '⚡';
+    if (toolName === 'search_documents') icon = '🔍';
+    else if (toolName === 'get_stock_data') icon = '📈';
+    else if (toolName === 'get_crypto_data') icon = '💱';
+    else if (toolName === 'compare_assets') icon = '⚖️';
+    else if (toolName === 'done') icon = '✓';
+    iconSpan.textContent = icon;
+
+    labelWrap.appendChild(labelSpan);
+    if (detail) {
+        labelWrap.appendChild(detailSpan);
+    }
+
+    container.appendChild(iconSpan);
+    container.appendChild(labelWrap);
+    container.appendChild(timeSpan);
+
+    feed.appendChild(container);
+    feed.scrollTop = feed.scrollHeight;
+
+    return container;
+}
+
+/**
+ * Creates and appends an empty agent chat bubble, returning the element so
+ * the caller can update its contents as new text arrives.
+ * @param {string} text
+ * @returns {HTMLElement}
+ */
+function appendAgentBubble(text) {
+    const messagesEl = document.getElementById('chat-messages');
+    const bubble = document.createElement('div');
+    bubble.className = 'chat-message message-agent';
+    bubble.textContent = text || '';
+    if (messagesEl) {
+        messagesEl.appendChild(bubble);
+        scrollChatToBottom();
+    }
+    return bubble;
+}
+
+/**
+ * Appends a tools badge under the given agent bubble to summarize which tools
+ * were invoked during the agent's reasoning.
+ * @param {HTMLElement} bubbleEl
+ * @param {Array<any>} toolsUsed
+ */
+function appendToolsBadge(bubbleEl, toolsUsed) {
+    if (!bubbleEl || !Array.isArray(toolsUsed) || toolsUsed.length === 0) return;
+    const toolNames = toolsUsed
+        .map((t) => (t && (t.tool || t.name)))
+        .filter(Boolean);
+    if (toolNames.length === 0) return;
+    const badge = document.createElement('div');
+    badge.className = 'tools-badge';
+    badge.textContent = `Tools used: ${toolNames.join(', ')}`;
+    bubbleEl.appendChild(document.createElement('br'));
+    bubbleEl.appendChild(badge);
+}
+
+/**
+ * Appends a small cost / token usage line just below a given agent message.
+ * @param {HTMLElement} bubbleEl
+ * @param {number} totalTokens
+ */
+function appendMessageMeta(bubbleEl, totalTokens) {
+    if (!bubbleEl || typeof totalTokens !== 'number') return;
+    const estimatedCost = (totalTokens * 0.000003).toFixed(4); // $3 per 1M tokens
+    const meta = document.createElement('div');
+    meta.className = 'message-meta';
+    meta.textContent = `${totalTokens} tokens · ~$${estimatedCost}`;
+    if (bubbleEl.parentNode) {
+        bubbleEl.parentNode.insertBefore(meta, bubbleEl.nextSibling);
+    }
+}
+
+/**
+ * Updates the small status line beneath the chat input to indicate what the
+ * agent is currently doing (e.g., calling tools, streaming answer, errors).
+ * @param {string} text
+ */
+function updateAgentStatus(text) {
+    const statusEl = document.getElementById('agent-status');
+    if (statusEl) {
+        statusEl.textContent = text || '';
+    }
+}
+
+/**
+ * Scrolls the chat messages container to the bottom so the latest messages
+ * and streamed chunks remain in view.
+ */
+function scrollChatToBottom() {
+    const messagesEl = document.getElementById('chat-messages');
+    if (messagesEl) {
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+}
+
+/**
+ * Re-enables the chat send button after a streaming session completes or
+ * encounters an error.
+ */
+function enableSendButton() {
+    const sendBtn = document.getElementById('chat-send-btn');
+    if (sendBtn) {
+        sendBtn.disabled = false;
+    }
+}
+
+/**
+ * Streaming version of the Financial Research Agent chat. Uses an EventSource
+ * connected to the /agent/stream SSE endpoint and incrementally appends text
+ * deltas to a single agent bubble as they arrive.
+ * @param {string} userText
+ */
+function sendMessageStreaming(userText) {
+    const encodedMsg = encodeURIComponent(userText);
+    const es = new EventSource(`${API_BASE}/agent/stream?message=${encodedMsg}`);
+    let agentBubble = null;
+    let fullText = '';
+
+    // New run: clear prior activity entries.
+    clearActivityFeed();
+
+    es.onmessage = function (event) {
+        let data;
+        try {
+            data = JSON.parse(event.data);
+        } catch {
+            return;
+        }
+
+        if (data.type === 'tool_call') {
+            // Show which tool is being called and log to activity feed
+            updateAgentStatus(`Calling ${data.tool}...`);
+            const detail = (data.input && (data.input.ticker || data.input.query)) || '';
+            const item = addActivityItem(data.tool, 'pending', detail);
+            if (item) {
+                activeActivityItems[data.tool] = item;
+            }
+        } else if (data.type === 'tool_result') {
+            // Mark corresponding activity item complete when tool result arrives
+            const item = activeActivityItems[data.tool];
+            if (item && item.classList.contains('pending')) {
+                item.classList.remove('pending');
+                item.classList.add('complete');
+            }
+            // Update label/detail to include duration, e.g. "get_stock_data AAPL  →  243ms"
+            if (item) {
+                const labelEl = item.querySelector('.activity-item-label');
+                const detailEl = item.querySelector('.activity-item-detail');
+                const baseLabel = item.dataset.toolName || data.tool;
+                const baseDetail = item.dataset.detail || (detailEl ? detailEl.textContent : '');
+                const durationMs = typeof data.duration_ms === 'number' ? data.duration_ms : null;
+
+                if (labelEl) {
+                    labelEl.textContent = baseLabel + (baseDetail ? `  ${baseDetail}` : '');
+                }
+
+                if (durationMs !== null) {
+                    const durationText = `→  ${durationMs}ms`;
+                    if (detailEl) {
+                        detailEl.textContent = durationText;
+                    } else {
+                        const newDetail = document.createElement('div');
+                        newDetail.className = 'activity-item-detail';
+                        newDetail.textContent = durationText;
+                        const main = item.querySelector('.activity-item-main') || item;
+                        main.appendChild(newDetail);
+                    }
+                }
+            }
+        } else if (data.type === 'text_delta') {
+            // Create bubble on first chunk
+            if (!agentBubble) {
+                agentBubble = appendAgentBubble('');
+                updateAgentStatus('');
+            }
+            fullText += data.text;
+            agentBubble.textContent = fullText;
+            scrollChatToBottom();
+        } else if (data.type === 'done') {
+            // Finalize — add tools badge, update history
+            appendToolsBadge(agentBubble, data.tools_used || []);
+            appendMessageMeta(agentBubble, data.total_tokens || 0);
+            if (Array.isArray(data.conversation_history)) {
+                conversationHistory.length = 0;
+                data.conversation_history.forEach((m) => conversationHistory.push(m));
+            }
+            addActivityItem('done', 'complete', `${data.total_tokens || 0} tokens`);
+            es.close();
+            enableSendButton();
+        } else if (data.type === 'error') {
+            updateAgentStatus('Error: ' + (data.message || 'Unknown error'));
+            es.close();
+            enableSendButton();
+        }
+    };
+
+    es.onerror = function () {
+        updateAgentStatus('Connection lost. Please try again.');
+        es.close();
+        enableSendButton();
+    };
 }

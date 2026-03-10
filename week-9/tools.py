@@ -10,6 +10,29 @@ from crypto_data import get_crypto_data
 from indicators import calculate_rsi, calculate_sma
 from rag_pipeline import search_documents
 import json
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+
+
+_EXECUTOR = ThreadPoolExecutor(max_workers=8)
+
+
+def _run_with_timeout(fn, *args, timeout: float = 10.0):
+    """Run a blocking function in a worker thread with a timeout.
+
+    Returns (result, error_dict). On timeout, result is None and error_dict is
+    a JSON-serializable error payload.
+    """
+    future = _EXECUTOR.submit(fn, *args)
+    try:
+        return future.result(timeout=timeout), None
+    except TimeoutError:
+        return None, {
+            "error": True,
+            "message": (
+                "Data fetch timed out. Market data provider may be slow. "
+                "Try again."
+            ),
+        }
 
 
 # Descriptions here are critical because Claude reads them to decide
@@ -127,22 +150,48 @@ def execute_tool(tool_name: str, tool_input: dict) -> str:
     """Route tool calls from the agent to concrete Python implementations."""
     try:
         if tool_name == "get_stock_data":
-            result = get_stock_data(tool_input["ticker"])
+            result, timeout_err = _run_with_timeout(
+                get_stock_data, tool_input["ticker"], timeout=10.0
+            )
+            if timeout_err:
+                return json.dumps(timeout_err)
             return json.dumps(result)
         elif tool_name == "get_crypto_data":
-            result = get_crypto_data(tool_input["ticker"])
+            result, timeout_err = _run_with_timeout(
+                get_crypto_data, tool_input["ticker"], timeout=10.0
+            )
+            if timeout_err:
+                return json.dumps(timeout_err)
             return json.dumps(result)
         elif tool_name == "search_documents":
             collection = tool_input.get("collection_name", "default")
             results = search_documents(tool_input["query"], collection)
+            if not results:
+                return json.dumps(
+                    {
+                        "results": [],
+                        "message": (
+                            "No documents found in this collection. "
+                            "Upload a document first via POST /documents/upload."
+                        ),
+                    }
+                )
             return json.dumps(results[:3])
         elif tool_name == "compare_assets":
             a1_type = tool_input.get("asset1_type", "stock")
             a2_type = tool_input.get("asset2_type", "stock")
             fn1 = get_crypto_data if a1_type == "crypto" else get_stock_data
             fn2 = get_crypto_data if a2_type == "crypto" else get_stock_data
-            data1 = fn1(tool_input["asset1"])
-            data2 = fn2(tool_input["asset2"])
+            data1, timeout_err1 = _run_with_timeout(
+                fn1, tool_input["asset1"], timeout=10.0
+            )
+            if timeout_err1:
+                return json.dumps(timeout_err1)
+            data2, timeout_err2 = _run_with_timeout(
+                fn2, tool_input["asset2"], timeout=10.0
+            )
+            if timeout_err2:
+                return json.dumps(timeout_err2)
             return json.dumps({"asset1": data1, "asset2": data2})
         else:
             return json.dumps({"error": f"Unknown tool: {tool_name}"})

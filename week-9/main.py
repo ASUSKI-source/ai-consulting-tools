@@ -1,12 +1,14 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import os
-from agent import run_agent
+from agent import run_agent, run_agent_stream, MODEL
 from pydantic import BaseModel
 from typing import Optional, List, Any
+from rate_limiter import check_rate_limit, get_rate_limit_status
+from tools import TOOLS
 
 load_dotenv()
 
@@ -30,6 +32,15 @@ async def health():
     return {'status': 'ok', 'service': 'Financial Research Agent'}
 
 
+def get_client_identifier(request: Request) -> str:
+    """Return a stable identifier for rate limiting.
+
+    In a fully authenticated setup this would prefer the current user's ID.
+    For Week 9 where auth is optional, we use the client IP address.
+    """
+    client_host = request.client.host if request.client else 'unknown'
+    return client_host
+
 class AgentRequest(BaseModel):
     message: str
     conversation_history: Optional[List[Any]] = None
@@ -45,21 +56,94 @@ class AgentResponse(BaseModel):
 
 
 @app.post('/agent/chat', response_model=AgentResponse)
-async def agent_chat(request: AgentRequest) -> AgentResponse:
+async def agent_chat(request: Request, payload: AgentRequest):
     try:
+        # HARDENING: reject empty or overly long messages early.
+        if not payload.message or not payload.message.strip():
+            raise HTTPException(status_code=400, detail='Message cannot be empty')
+        if len(payload.message) > 2000:
+            raise HTTPException(
+                status_code=400,
+                detail='Message too long. Maximum 2000 characters.',
+            )
+
+        identifier = get_client_identifier(request)
+        check_rate_limit(identifier)
+
         result = run_agent(
-            request.message,
-            request.conversation_history,
-            request.collection_name,
+            payload.message,
+            payload.conversation_history,
+            payload.collection_name,
         )
-        print(f'Agent query: {request.message[:50]}')
+        print(f'Agent query: {payload.message[:50]}')
         print(f'Tools used: {[t["tool"] for t in result["tools_used"]]}')
-        return AgentResponse(
-            answer=result['answer'],
-            tools_used=result['tools_used'],
-            iterations=result['iterations'],
-            total_tokens=result['total_tokens'],
-            conversation_history=result['conversation_history'],
-        )
+        status = get_rate_limit_status(identifier)
+        headers = {
+            'X-RateLimit-Limit': str(status['limit']),
+            'X-RateLimit-Remaining': str(status['requests_remaining']),
+        }
+        content = {
+            'answer': result['answer'],
+            'tools_used': result['tools_used'],
+            'iterations': result['iterations'],
+            'total_tokens': result['total_tokens'],
+            'conversation_history': result['conversation_history'],
+        }
+        return JSONResponse(content=content, headers=headers)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get('/agent/stream')
+async def agent_stream(request: Request, message: str, collection_name: str = 'default'):
+    """
+    Streaming SSE endpoint for the Financial Research Agent.
+
+    Uses a stateless conversation for now (no server-side history), while
+    /agent/chat continues to handle full conversational history.
+    """
+
+    identifier = get_client_identifier(request)
+    check_rate_limit(identifier)
+
+    def generate():
+        # Stateless streaming: pass an empty history list; collection_name is
+        # forwarded so the agent can route tool behavior if needed.
+        yield from run_agent_stream(message, [], collection_name)
+
+    return StreamingResponse(
+        generate(),
+        media_type='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',  # disable nginx buffering on Railway
+        },
+    )
+
+
+@app.get('/agent/rate-limit-status')
+async def agent_rate_limit_status(request: Request):
+    identifier = get_client_identifier(request)
+    return get_rate_limit_status(identifier)
+
+
+@app.get('/agent/health')
+async def agent_health():
+    """Lightweight healthcheck for the agent and its tools."""
+    try:
+        # Touch tool and model definitions so import errors surface here.
+        _ = [t["name"] for t in TOOLS]
+        model_name = MODEL
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f'Agent health failed: {e}')
+
+    return {
+        'status': 'ok',
+        'tools_available': [
+            'get_stock_data',
+            'get_crypto_data',
+            'search_documents',
+            'compare_assets',
+        ],
+        'model': model_name,
+    }
