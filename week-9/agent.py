@@ -349,9 +349,24 @@ def run_agent_stream(
                 )
 
             # Finally, emit a terminal done event with metadata about the run,
-            # including the tools used, aggregate token usage, and the updated
-            # conversation history for the next turn.
-            yield f"data: {json.dumps({'type': 'done', 'tools_used': tools_used, 'total_tokens': total_tokens, 'conversation_history': messages})}\n\n"
+            # including the tools used, aggregate token usage, and a
+            # JSON-serializable conversation history for the next turn.
+            safe_history = [
+                {
+                    "role": msg.get("role"),
+                    "content": [
+                        _serialize_block(block) for block in msg.get("content", [])
+                    ],
+                }
+                for msg in messages
+            ]
+            payload = {
+                "type": "done",
+                "tools_used": tools_used,
+                "total_tokens": total_tokens,
+                "conversation_history": safe_history,
+            }
+            yield f"data: {json.dumps(payload)}\n\n"
             return
 
         # Any other stop_reason is unexpected in this loop; surface an error
