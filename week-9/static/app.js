@@ -1927,7 +1927,11 @@ function enableSendButton() {
  */
 function sendMessageStreaming(userText) {
     const encodedMsg = encodeURIComponent(userText);
-    const es = new EventSource(`${API_BASE}/agent/stream?message=${encodedMsg}`);
+    // Include serialized conversation history so the backend can maintain context.
+    const historyParam = encodeURIComponent(JSON.stringify(conversationHistory || []));
+    const es = new EventSource(
+        `${API_BASE}/agent/stream?message=${encodedMsg}&conversation_history=${historyParam}`
+    );
     let agentBubble = null;
     let fullText = '';
 

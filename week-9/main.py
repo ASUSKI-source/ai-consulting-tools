@@ -95,7 +95,12 @@ async def agent_chat(request: Request, payload: AgentRequest):
 
 
 @app.get('/agent/stream')
-async def agent_stream(request: Request, message: str, collection_name: str = 'default'):
+async def agent_stream(
+    request: Request,
+    message: str,
+    collection_name: str = 'default',
+    conversation_history: Optional[str] = None,
+):
     """
     Streaming SSE endpoint for the Financial Research Agent.
 
@@ -106,10 +111,17 @@ async def agent_stream(request: Request, message: str, collection_name: str = 'd
     identifier = get_client_identifier(request)
     check_rate_limit(identifier)
 
+    history_obj: Any = []
+    if conversation_history:
+        try:
+            history_obj = json.loads(conversation_history)
+        except Exception:
+            history_obj = []
+
     def generate():
-        # Stateless streaming: pass an empty history list; collection_name is
-        # forwarded so the agent can route tool behavior if needed.
-        yield from run_agent_stream(message, [], collection_name)
+        # Pass along prior conversation history so the agent can answer
+        # follow-up questions with full context.
+        yield from run_agent_stream(message, history_obj, collection_name)
 
     return StreamingResponse(
         generate(),
