@@ -249,10 +249,13 @@ def run_agent_stream(
     """
 
     # Start from any prior conversation history (if provided) so the model can
-    # maintain context across turns, then append the latest user message as the
-    # next step in the dialogue.
-    messages = list(conversation_history or [])
-    messages.append({"role": "user", "content": user_message})
+    # maintain context across turns. We normalize the wire-format history into
+    # valid Anthropic message objects, then append the latest user question as
+    # a proper text block.
+    messages: List[Dict[str, Any]] = _normalize_history(conversation_history)
+    messages.append(
+        {"role": "user", "content": [{"type": "text", "text": user_message}]}
+    )
 
     # Track which tools were invoked (and with what inputs) as well as loop
     # iterations and approximate token usage for monitoring / debugging.
